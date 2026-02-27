@@ -81,6 +81,8 @@ typedef enum {
 
 /* Query the active safety profile at runtime */
 ASX_API asx_safety_profile asx_safety_profile_active(void);
+
+/* Return the human-readable name of a safety profile. Never returns NULL. */
 ASX_API const char *asx_safety_profile_str(asx_safety_profile profile);
 
 /* ------------------------------------------------------------------ */
@@ -130,8 +132,14 @@ typedef struct {
     uint32_t       trigger_count; /* deactivate after N injections (0 = permanent) */
 } asx_fault_injection;
 
+/* Inject a controlled fault for deterministic testing.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if fault is NULL. */
 ASX_API asx_status asx_fault_inject(const asx_fault_injection *fault);
+
+/* Clear all active fault injections. Returns ASX_OK. */
 ASX_API asx_status asx_fault_clear(void);
+
+/* Return the number of currently active fault injections. */
 ASX_API uint32_t   asx_fault_injection_count(void);
 
 /* ------------------------------------------------------------------ */
@@ -238,28 +246,50 @@ typedef struct {
 /* Initialize config with profile-appropriate defaults */
 ASX_API void asx_runtime_config_init(asx_runtime_config *cfg);
 
-/* Initialize hook table with safe defaults */
+/* Initialize hook table with safe defaults.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if hooks is NULL. */
 ASX_API asx_status asx_runtime_hooks_init(asx_runtime_hooks *hooks);
 
-/* Validate hooks under deterministic/non-deterministic policy */
+/* Validate hooks under deterministic/non-deterministic policy.
+ * Returns ASX_OK if valid, ASX_E_HOOK_INVALID if constraints violated. */
 ASX_API asx_status asx_runtime_hooks_validate(const asx_runtime_hooks *hooks, int deterministic_mode);
 
-/* Install active runtime hooks */
+/* Install active runtime hooks.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if hooks is NULL. */
 ASX_API asx_status asx_runtime_set_hooks(const asx_runtime_hooks *hooks);
 
 /* Read currently active hooks (never NULL once initialized) */
 ASX_API const asx_runtime_hooks *asx_runtime_get_hooks(void);
 
-/* Seal allocator for steady-state no-allocation profiles */
+/* Seal allocator for steady-state no-allocation profiles.
+ * Returns ASX_OK on success. After sealing, asx_runtime_alloc returns
+ * ASX_E_ALLOCATOR_SEALED. */
 ASX_API asx_status asx_runtime_seal_allocator(void);
 
-/* Hook-backed runtime helpers */
+/* Allocate memory via hook. Returns ASX_OK on success,
+ * ASX_E_HOOK_MISSING if no allocator, ASX_E_ALLOCATOR_SEALED if sealed. */
 ASX_API asx_status asx_runtime_alloc(size_t size, void **out_ptr);
+
+/* Reallocate memory via hook. Returns ASX_OK on success,
+ * ASX_E_HOOK_MISSING if no allocator, ASX_E_ALLOCATOR_SEALED if sealed. */
 ASX_API asx_status asx_runtime_realloc(void *ptr, size_t size, void **out_ptr);
+
+/* Free memory via hook. Returns ASX_OK on success,
+ * ASX_E_HOOK_MISSING if no allocator. */
 ASX_API asx_status asx_runtime_free(void *ptr);
+
+/* Read current time via clock hook. Returns ASX_OK on success,
+ * ASX_E_HOOK_MISSING if no clock hook installed. */
 ASX_API asx_status asx_runtime_now_ns(asx_time *out_now);
+
+/* Read random u64 via entropy hook. Returns ASX_OK on success,
+ * ASX_E_HOOK_MISSING if no entropy hook installed. */
 ASX_API asx_status asx_runtime_random_u64(uint64_t *out_value);
+/* Wait for reactor readiness. Returns ready count via out_ready_count.
+ * Returns ASX_E_HOOK_MISSING if no reactor hook installed. */
 ASX_API asx_status asx_runtime_reactor_wait(uint32_t timeout_ms, uint32_t *out_ready_count, uint64_t logical_step);
+/* Write a log message at the given severity level.
+ * Returns ASX_E_HOOK_MISSING if no log hook installed. */
 ASX_API asx_status asx_runtime_log_write(int level, const char *message);
 
 #endif /* ASX_CONFIG_H */

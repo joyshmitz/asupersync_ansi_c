@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "../../test_log.h"
 #include "../../test_harness.h"
 #include <asx/core/budget.h>
 
@@ -150,6 +151,7 @@ TEST(budget_deadline_max) {
 }
 
 int main(void) {
+    test_log_open("unit", "core/budget", "test_budget");
     fprintf(stderr, "=== test_budget ===\n");
     RUN_TEST(budget_infinite_is_identity);
     RUN_TEST(budget_zero_is_absorbing);
@@ -167,5 +169,6 @@ int main(void) {
     RUN_TEST(budget_consume_cost_exact_boundary);
     RUN_TEST(budget_deadline_max);
     TEST_REPORT();
+    test_log_close();
     return test_failures;
 }

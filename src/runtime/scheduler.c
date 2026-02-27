@@ -15,6 +15,7 @@
 #include <asx/asx.h>
 #include <asx/runtime/runtime.h>
 #include <asx/core/transition.h>
+#include <asx/core/cancel.h>
 #include "runtime_internal.h"
 
 /* -------------------------------------------------------------------
@@ -118,6 +119,59 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
 
             active++;
 
+            /* Build task handle for poll callback */
+            tid = asx_handle_pack(ASX_TYPE_TASK,
+                                  (uint16_t)(1u << (unsigned)t->state),
+                                  asx_handle_pack_index(
+                                      t->generation, (uint16_t)i));
+
+            /* ----------------------------------------------------------
+             * Cancel-phase scheduler integration (bd-2cw.3)
+             *
+             * FINALIZING: task called asx_task_finalize() — cleanup is
+             * done. Complete without consuming a poll unit.
+             *
+             * CANCELLING + budget exhausted: force-complete with
+             * CANCELLED outcome. This ensures bounded cleanup.
+             * ---------------------------------------------------------- */
+            if (t->state == ASX_TASK_FINALIZING) {
+                (void)asx_ghost_check_task_transition(tid, t->state,
+                                                      ASX_TASK_COMPLETED);
+                t->state = ASX_TASK_COMPLETED;
+                t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
+                asx_task_release_capture(t);
+                rslot->task_count--;
+                active--;
+                sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
+                continue;
+            }
+
+            if (t->cancel_pending &&
+                (t->state == ASX_TASK_CANCELLING ||
+                 t->state == ASX_TASK_CANCEL_REQUESTED) &&
+                t->cleanup_polls_remaining == 0) {
+                /* Force-complete: cleanup budget exhausted. The task
+                 * either never called checkpoint (CANCEL_REQUESTED)
+                 * or ran out of cleanup polls (CANCELLING). */
+                if (t->state == ASX_TASK_CANCEL_REQUESTED) {
+                    (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_CANCELLING);
+                    t->state = ASX_TASK_CANCELLING;
+                    t->cancel_phase = ASX_CANCEL_PHASE_CANCELLING;
+                }
+                (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_FINALIZING);
+                t->state = ASX_TASK_FINALIZING;
+                t->cancel_phase = ASX_CANCEL_PHASE_FINALIZING;
+                (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_COMPLETED);
+                t->state = ASX_TASK_COMPLETED;
+                t->cancel_phase = ASX_CANCEL_PHASE_COMPLETED;
+                t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
+                asx_task_release_capture(t);
+                rslot->task_count--;
+                active--;
+                sched_emit(ASX_SCHED_EVENT_CANCEL_FORCED, tid, round);
+                continue;
+            }
+
             /* Consume one poll unit */
             if (asx_budget_consume_poll(budget) == 0) {
                 sched_emit(ASX_SCHED_EVENT_BUDGET, ASX_INVALID_ID, round);
@@ -129,12 +183,6 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 t->state = ASX_TASK_RUNNING;
             }
 
-            /* Build task handle for poll callback */
-            tid = asx_handle_pack(ASX_TYPE_TASK,
-                                  (uint16_t)(1u << (unsigned)t->state),
-                                  asx_handle_pack_index(
-                                      t->generation, (uint16_t)i));
-
             /* Emit poll event */
             sched_emit(ASX_SCHED_EVENT_POLL, tid, round);
 
@@ -144,25 +192,51 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
             asx_error_ledger_bind_task(ASX_INVALID_ID);
 
             if (poll_result == ASX_OK) {
-                /* Task completed successfully */
+                /* Task completed — set outcome based on cancel state */
                 (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_COMPLETED);
                 t->state = ASX_TASK_COMPLETED;
-                t->outcome = asx_outcome_make(ASX_OUTCOME_OK);
+                if (t->cancel_pending) {
+                    t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
+                } else {
+                    t->outcome = asx_outcome_make(ASX_OUTCOME_OK);
+                }
                 asx_task_release_capture(t);
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
             } else if (poll_result != ASX_E_PENDING) {
-                /* Task failed — mark as completed with error */
+                /* Task failed — mark as completed with error.
+                 * If cancel was pending, outcome joins to CANCELLED
+                 * since CANCELLED > ERR in the severity lattice. */
                 (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_COMPLETED);
                 t->state = ASX_TASK_COMPLETED;
-                t->outcome = asx_outcome_make(ASX_OUTCOME_ERR);
+                if (t->cancel_pending) {
+                    t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
+                } else {
+                    t->outcome = asx_outcome_make(ASX_OUTCOME_ERR);
+                }
                 asx_task_release_capture(t);
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
+
+                /* Apply fault containment policy (bd-hwb.15).
+                 * In POISON_REGION mode this poisons the region,
+                 * blocking further spawn/close. The scheduler
+                 * continues draining existing tasks. */
+                {
+                    asx_status fc_ = asx_region_contain_fault(region, poll_result);
+                    (void)fc_;
+                }
+            } else if (t->cancel_pending) {
+                /* PENDING + cancel active: decrement cleanup budget.
+                 * The scheduler is the sole budget enforcer — each
+                 * poll of a cancel-phase task consumes one unit. */
+                if (t->cleanup_polls_remaining > 0) {
+                    t->cleanup_polls_remaining--;
+                }
             }
-            /* ASX_E_PENDING: task not ready, continue polling next task */
+            /* ASX_E_PENDING without cancel: task not ready, continue */
         }
 
         /* No active tasks left — quiescent */

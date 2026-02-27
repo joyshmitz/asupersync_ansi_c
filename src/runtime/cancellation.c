@@ -82,6 +82,30 @@ asx_status asx_task_cancel(asx_task_id id, asx_cancel_kind kind)
 }
 
 /* -------------------------------------------------------------------
+ * Cancel with origin attribution (for propagation traceability)
+ * ------------------------------------------------------------------- */
+
+asx_status asx_task_cancel_with_origin(asx_task_id id,
+                                       asx_cancel_kind kind,
+                                       asx_region_id origin_region,
+                                       asx_task_id origin_task)
+{
+    asx_task_slot *t;
+    asx_status st;
+
+    st = asx_task_cancel(id, kind);
+    if (st != ASX_OK) return st;
+
+    st = asx_task_slot_lookup(id, &t);
+    if (st != ASX_OK) return st;
+
+    t->cancel_reason.origin_region = origin_region;
+    t->cancel_reason.origin_task = origin_task;
+
+    return ASX_OK;
+}
+
+/* -------------------------------------------------------------------
  * Region-wide propagation
  * ------------------------------------------------------------------- */
 
@@ -103,6 +127,8 @@ uint32_t asx_cancel_propagate(asx_region_id region, asx_cancel_kind kind)
                               asx_handle_pack_index(t->generation, (uint16_t)i));
 
         if (asx_task_cancel(tid, kind) == ASX_OK) {
+            /* Set origin region for propagation traceability */
+            t->cancel_reason.origin_region = region;
             count++;
         }
     }
@@ -145,10 +171,8 @@ asx_status asx_checkpoint(asx_task_id self, asx_checkpoint_result *out)
     out->polls_remaining = t->cleanup_polls_remaining;
     out->kind = t->cancel_reason.kind;
 
-    /* Decrement cleanup budget */
-    if (t->cleanup_polls_remaining > 0) {
-        t->cleanup_polls_remaining--;
-    }
+    /* Budget is decremented by the scheduler after each poll,
+     * not here. Checkpoint only observes and transitions phases. */
 
     return ASX_OK;
 }

@@ -72,8 +72,11 @@ ASX_API asx_status asx_codec_buffer_append_cstr(asx_codec_buffer *buf, const cha
 ASX_API asx_status asx_codec_buffer_append_char(asx_codec_buffer *buf, char ch);
 ASX_API asx_status asx_codec_buffer_append_u64(asx_codec_buffer *buf, uint64_t value);
 ASX_API asx_status asx_codec_buffer_append_json_string(asx_codec_buffer *buf, const char *text);
+/* Append JSON field separator (comma unless first field). */
 ASX_API asx_status asx_codec_buffer_append_field_prefix(asx_codec_buffer *buf, int *is_first);
+/* Append a key-value string field in JSON format. */
 ASX_API asx_status asx_codec_buffer_append_string_field(asx_codec_buffer *buf, int *is_first, const char *key, const char *value);
+/* Append a key-value uint64 field in JSON format. */
 ASX_API asx_status asx_codec_buffer_append_u64_field(asx_codec_buffer *buf, int *is_first, const char *key, uint64_t value);
 
 /* Codec dispatch table lookup */

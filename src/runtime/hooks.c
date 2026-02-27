@@ -11,6 +11,8 @@
  */
 
 #include <asx/asx_config.h>
+#include <asx/portable.h>
+#include <asx/runtime/hindsight.h>
 #include <asx/codec/codec.h>
 #include <asx/codec/equivalence.h>
 #include "codec_internal.h"
@@ -90,6 +92,23 @@ const char *asx_safety_profile_str(asx_safety_profile profile) {
         case ASX_SAFETY_RELEASE:  return "release";
     }
     return "unknown";
+}
+
+asx_containment_policy asx_containment_policy_for_profile(
+    asx_safety_profile profile) {
+    switch (profile) {
+        case ASX_SAFETY_DEBUG:
+            return ASX_CONTAIN_FAIL_FAST;
+        case ASX_SAFETY_HARDENED:
+            return ASX_CONTAIN_POISON_REGION;
+        case ASX_SAFETY_RELEASE:
+            return ASX_CONTAIN_ERROR_ONLY;
+    }
+    return ASX_CONTAIN_ERROR_ONLY;
+}
+
+asx_containment_policy asx_containment_policy_active(void) {
+    return asx_containment_policy_for_profile(asx_safety_profile_active());
 }
 
 /* ------------------------------------------------------------------ */
@@ -308,6 +327,9 @@ asx_status asx_runtime_now_ns(asx_time *out_now) {
     }
     g_fault_clock_calls++;
 
+    /* Log nondeterministic clock boundary event */
+    asx_hindsight_log(ASX_ND_CLOCK_READ, 0, (uint64_t)raw);
+
     *out_now = raw;
     return ASX_OK;
 }
@@ -335,6 +357,9 @@ asx_status asx_runtime_random_u64(uint64_t *out_value) {
     }
     g_fault_entropy_calls++;
 
+    /* Log nondeterministic entropy boundary event */
+    asx_hindsight_log(ASX_ND_ENTROPY_READ, 0, *out_value);
+
     return ASX_OK;
 }
 
@@ -346,13 +371,25 @@ asx_status asx_runtime_reactor_wait(uint32_t timeout_ms,
 
 #if ASX_DETERMINISTIC
     if (g_hooks.reactor.ghost_wait_fn) {
-        return g_hooks.reactor.ghost_wait_fn(g_hooks.reactor.ctx,
-                                              logical_step, out_ready_count);
+        asx_status rs_ = g_hooks.reactor.ghost_wait_fn(
+            g_hooks.reactor.ctx, logical_step, out_ready_count);
+        if (rs_ == ASX_OK) {
+            asx_hindsight_log(
+                *out_ready_count > 0 ? ASX_ND_IO_READY : ASX_ND_IO_TIMEOUT,
+                0, (uint64_t)*out_ready_count);
+        }
+        return rs_;
     }
 #endif
     if (g_hooks.reactor.wait_fn) {
-        return g_hooks.reactor.wait_fn(g_hooks.reactor.ctx,
-                                        timeout_ms, out_ready_count);
+        asx_status rs_ = g_hooks.reactor.wait_fn(
+            g_hooks.reactor.ctx, timeout_ms, out_ready_count);
+        if (rs_ == ASX_OK) {
+            asx_hindsight_log(
+                *out_ready_count > 0 ? ASX_ND_IO_READY : ASX_ND_IO_TIMEOUT,
+                0, (uint64_t)*out_ready_count);
+        }
+        return rs_;
     }
     return ASX_E_INVALID_STATE;
 }
@@ -1735,23 +1772,9 @@ static uint32_t asx_codec_bin_checksum32(const unsigned char *bytes, size_t len)
     return hash;
 }
 
-static void asx_codec_bin_store_u32_be(unsigned char out[4], uint32_t value)
-{
-    out[0] = (unsigned char)((value >> 24) & 0xffu);
-    out[1] = (unsigned char)((value >> 16) & 0xffu);
-    out[2] = (unsigned char)((value >> 8) & 0xffu);
-    out[3] = (unsigned char)(value & 0xffu);
-}
-
-static uint32_t asx_codec_bin_load_u32_be(const unsigned char in[4])
-{
-    uint32_t v = 0u;
-    v |= ((uint32_t)in[0]) << 24;
-    v |= ((uint32_t)in[1]) << 16;
-    v |= ((uint32_t)in[2]) << 8;
-    v |= ((uint32_t)in[3]);
-    return v;
-}
+/* Big-endian helpers delegated to asx/portable.h (P-WRAP-003) */
+#define asx_codec_bin_store_u32_be(out, v) asx_store_be_u32((uint8_t *)(out), (v))
+#define asx_codec_bin_load_u32_be(in) asx_load_be_u32((const uint8_t *)(in))
 
 static asx_status asx_codec_bin_append_u8(asx_codec_buffer *buf, uint8_t value)
 {

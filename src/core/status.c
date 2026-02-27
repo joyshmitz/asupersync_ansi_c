@@ -132,6 +132,7 @@ const char *asx_status_str(asx_status s)
     case ASX_E_INVALID_STATE:             return "invalid state";
     case ASX_E_NOT_FOUND:                 return "not found";
     case ASX_E_ALREADY_EXISTS:            return "already exists";
+    case ASX_E_BUFFER_TOO_SMALL:          return "buffer too small";
     case ASX_E_INVALID_TRANSITION:        return "invalid state transition";
     case ASX_E_REGION_NOT_FOUND:          return "region not found";
     case ASX_E_REGION_CLOSED:             return "region closed";
@@ -159,6 +160,7 @@ const char *asx_status_str(asx_status s)
     case ASX_E_CHANNEL_NOT_DRAINED:       return "channel not drained";
     case ASX_E_TIMER_NOT_FOUND:           return "timer not found";
     case ASX_E_TIMERS_PENDING:            return "timers pending";
+    case ASX_E_TIMER_DURATION_EXCEEDED:   return "timer duration exceeded";
     case ASX_E_TASKS_STILL_ACTIVE:        return "tasks still active";
     case ASX_E_OBLIGATIONS_UNRESOLVED:    return "obligations unresolved";
     case ASX_E_REGIONS_NOT_CLOSED:        return "regions not closed";
@@ -177,6 +179,7 @@ const char *asx_status_str(asx_status s)
     case ASX_E_AFFINITY_TRANSFER_REQUIRED: return "cross-domain transfer required";
     case ASX_E_AFFINITY_TABLE_FULL:       return "affinity tracking table full";
     case ASX_E_EQUIVALENCE_MISMATCH:     return "cross-codec semantic equivalence mismatch";
+    case ASX_E_REPLAY_MISMATCH:          return "replay continuity mismatch";
     default:                              return "unknown status";
     }
 }

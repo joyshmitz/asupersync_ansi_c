@@ -9,6 +9,7 @@
  */
 
 #include <asx/asx.h>
+#include <asx/portable.h>
 #include <asx/runtime/trace.h>
 #include <string.h>
 #include "runtime_internal.h"
@@ -379,4 +380,159 @@ const char *asx_replay_result_kind_str(asx_replay_result_kind kind)
     case ASX_REPLAY_DIGEST_MISMATCH:   return "digest_mismatch";
     default:                           return "unknown";
     }
+}
+
+/* -------------------------------------------------------------------
+ * Binary trace persistence (bd-2n0.5)
+ *
+ * Little-endian wire format for cross-process trace continuity.
+ * ------------------------------------------------------------------- */
+
+static void write_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xFFu);
+    p[1] = (uint8_t)((v >> 8) & 0xFFu);
+    p[2] = (uint8_t)((v >> 16) & 0xFFu);
+    p[3] = (uint8_t)((v >> 24) & 0xFFu);
+}
+
+static void write_le64(uint8_t *p, uint64_t v)
+{
+    write_le32(p, (uint32_t)(v & 0xFFFFFFFFu));
+    write_le32(p + 4, (uint32_t)((v >> 32) & 0xFFFFFFFFu));
+}
+
+static uint32_t read_le32(const uint8_t *p)
+{
+    return (uint32_t)p[0]
+         | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16)
+         | ((uint32_t)p[3] << 24);
+}
+
+static uint64_t read_le64(const uint8_t *p)
+{
+    return (uint64_t)read_le32(p)
+         | ((uint64_t)read_le32(p + 4) << 32);
+}
+
+asx_status asx_trace_export_binary(uint8_t *buf,
+                                    uint32_t capacity,
+                                    uint32_t *out_len)
+{
+    uint32_t count;
+    uint32_t needed;
+    uint64_t digest;
+    uint32_t i;
+    uint8_t *p;
+
+    if (buf == NULL || out_len == NULL) return ASX_E_INVALID_ARGUMENT;
+
+    count = g_trace_count < ASX_TRACE_CAPACITY
+            ? g_trace_count
+            : ASX_TRACE_CAPACITY;
+
+    needed = ASX_TRACE_BINARY_HEADER + count * ASX_TRACE_BINARY_EVENT;
+    if (capacity < needed) {
+        *out_len = needed;
+        return ASX_E_BUFFER_TOO_SMALL;
+    }
+
+    digest = asx_trace_digest();
+
+    /* Write header */
+    write_le32(buf + 0, ASX_TRACE_BINARY_MAGIC);
+    write_le32(buf + 4, ASX_TRACE_BINARY_VERSION);
+    write_le32(buf + 8, count);
+    write_le32(buf + 12, 0);  /* reserved */
+    write_le64(buf + 16, digest);
+
+    /* Write events */
+    p = buf + ASX_TRACE_BINARY_HEADER;
+    for (i = 0; i < count; i++) {
+        asx_trace_event *e = &g_trace_ring[i];
+        write_le32(p + 0, e->sequence);
+        write_le32(p + 4, (uint32_t)e->kind);
+        write_le64(p + 8, e->entity_id);
+        write_le64(p + 16, e->aux);
+        p += ASX_TRACE_BINARY_EVENT;
+    }
+
+    *out_len = needed;
+    return ASX_OK;
+}
+
+asx_status asx_trace_import_binary(const uint8_t *buf, uint32_t len)
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t count;
+    uint64_t stored_digest;
+    uint32_t needed;
+    uint32_t i;
+    const uint8_t *p;
+    asx_trace_event events[ASX_TRACE_CAPACITY];
+    uint64_t computed_digest;
+    uint64_t hash;
+
+    if (buf == NULL) return ASX_E_INVALID_ARGUMENT;
+    if (len < ASX_TRACE_BINARY_HEADER) return ASX_E_INVALID_ARGUMENT;
+
+    magic   = read_le32(buf + 0);
+    version = read_le32(buf + 4);
+    count   = read_le32(buf + 8);
+    stored_digest = read_le64(buf + 16);
+
+    if (magic != ASX_TRACE_BINARY_MAGIC) return ASX_E_INVALID_ARGUMENT;
+    if (version != ASX_TRACE_BINARY_VERSION) return ASX_E_INVALID_ARGUMENT;
+    if (count > ASX_TRACE_CAPACITY) return ASX_E_INVALID_ARGUMENT;
+
+    needed = ASX_TRACE_BINARY_HEADER + count * ASX_TRACE_BINARY_EVENT;
+    if (len < needed) return ASX_E_INVALID_ARGUMENT;
+
+    /* Decode events */
+    p = buf + ASX_TRACE_BINARY_HEADER;
+    for (i = 0; i < count; i++) {
+        events[i].sequence  = read_le32(p + 0);
+        events[i].kind      = (asx_trace_event_kind)read_le32(p + 4);
+        events[i].entity_id = read_le64(p + 8);
+        events[i].aux       = read_le64(p + 16);
+        p += ASX_TRACE_BINARY_EVENT;
+    }
+
+    /* Verify digest of decoded events matches stored digest */
+    hash = 0x517cc1b727220a95ULL;
+    for (i = 0; i < count; i++) {
+        uint32_t k = (uint32_t)events[i].kind;
+        hash = fnv1a_mix(hash, &events[i].sequence, sizeof(events[i].sequence));
+        hash = fnv1a_mix(hash, &k, sizeof(k));
+        hash = fnv1a_mix(hash, &events[i].entity_id, sizeof(events[i].entity_id));
+        hash = fnv1a_mix(hash, &events[i].aux, sizeof(events[i].aux));
+    }
+    computed_digest = hash;
+
+    if (computed_digest != stored_digest) return ASX_E_INVALID_ARGUMENT;
+
+    /* Load as replay reference */
+    return asx_replay_load_reference(events, count);
+}
+
+asx_status asx_trace_continuity_check(const uint8_t *buf, uint32_t len)
+{
+    asx_status st;
+    asx_replay_result result;
+
+    st = asx_trace_import_binary(buf, len);
+    if (st != ASX_OK) return st;
+
+    result = asx_replay_verify();
+
+    /* Clean up reference */
+    asx_replay_clear_reference();
+
+    if (result.result != ASX_REPLAY_MATCH) {
+        return ASX_E_REPLAY_MISMATCH;
+    }
+
+    return ASX_OK;
 }

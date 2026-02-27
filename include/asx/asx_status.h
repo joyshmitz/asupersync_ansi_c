@@ -27,6 +27,7 @@ typedef enum {
     ASX_E_INVALID_STATE        = 101,
     ASX_E_NOT_FOUND            = 102,
     ASX_E_ALREADY_EXISTS       = 103,
+    ASX_E_BUFFER_TOO_SMALL     = 104,
 
     /* Transition errors (2xx) */
     ASX_E_INVALID_TRANSITION   = 200,
@@ -68,6 +69,7 @@ typedef enum {
     /* Timer errors (8xx) */
     ASX_E_TIMER_NOT_FOUND      = 800,
     ASX_E_TIMERS_PENDING       = 801,
+    ASX_E_TIMER_DURATION_EXCEEDED = 802,
 
     /* Quiescence errors (9xx) */
     ASX_E_TASKS_STILL_ACTIVE     = 900,
@@ -97,7 +99,10 @@ typedef enum {
     ASX_E_AFFINITY_TABLE_FULL  = 1304,  /* tracking table exhausted */
 
     /* Codec equivalence errors (14xx) */
-    ASX_E_EQUIVALENCE_MISMATCH = 1400   /* cross-codec semantic mismatch */
+    ASX_E_EQUIVALENCE_MISMATCH = 1400,  /* cross-codec semantic mismatch */
+
+    /* Trace/replay errors (15xx) */
+    ASX_E_REPLAY_MISMATCH      = 1500   /* replay continuity check failed */
 
 } asx_status;
 
@@ -134,7 +139,8 @@ ASX_API void asx_error_ledger_bind_task(asx_task_id task_id);
 /* Return the currently bound task id (ASX_INVALID_ID if unbound). */
 ASX_API ASX_MUST_USE asx_task_id asx_error_ledger_bound_task(void);
 
-/* Record an error under the currently bound task context. */
+/* Record an error under the currently bound task context.
+ * Returns void; records the error into the global ledger. */
 ASX_API void asx_error_ledger_record_current(asx_status status,
                                              const char *operation,
                                              const char *file,
@@ -162,7 +168,11 @@ ASX_API ASX_MUST_USE int asx_error_ledger_get(asx_task_id task_id,
 /* Must-use coverage manifest                                         */
 /* ------------------------------------------------------------------ */
 
+/* Return the number of public API surfaces marked ASX_MUST_USE. */
 ASX_API ASX_MUST_USE uint32_t asx_must_use_surface_count(void);
+
+/* Return the name of the ASX_MUST_USE surface at the given index.
+ * Returns NULL if index is out of range. */
 ASX_API ASX_MUST_USE const char *asx_must_use_surface_name(uint32_t index);
 
 /* ------------------------------------------------------------------ */

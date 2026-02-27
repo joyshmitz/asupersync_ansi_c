@@ -58,6 +58,11 @@ void asx_runtime_reset(void)
         g_tasks[i].captured_state = NULL;
         g_tasks[i].captured_size = 0;
         g_tasks[i].captured_dtor = NULL;
+        g_tasks[i].cancel_phase = 0;
+        g_tasks[i].cancel_pending = 0;
+        g_tasks[i].cancel_epoch = 0;
+        g_tasks[i].cleanup_polls_remaining = 0;
+        memset(&g_tasks[i].cancel_reason, 0, sizeof(g_tasks[i].cancel_reason));
     }
     g_task_count = 0;
     for (i = 0; i < ASX_MAX_OBLIGATIONS; i++) {
@@ -265,6 +270,32 @@ asx_status asx_region_is_poisoned(asx_region_id id, int *out)
     return ASX_OK;
 }
 
+asx_status asx_region_contain_fault(asx_region_id id, asx_status fault)
+{
+    asx_containment_policy policy;
+
+    if (fault == ASX_OK) return ASX_OK;
+
+    policy = asx_containment_policy_active();
+    switch (policy) {
+    case ASX_CONTAIN_FAIL_FAST:
+        return fault;
+    case ASX_CONTAIN_POISON_REGION: {
+        asx_status ps_ = asx_region_poison(id);
+        (void)ps_;
+        /* Propagate cancellation to all live tasks in the region.
+         * ASX_CANCEL_RESOURCE is used because the fault represents
+         * a resource/invariant violation requiring bounded cleanup.
+         * This ensures no task continues with partially-corrupt state. */
+        (void)asx_cancel_propagate(id, ASX_CANCEL_RESOURCE);
+        return fault;
+    }
+    case ASX_CONTAIN_ERROR_ONLY:
+    default:
+        return fault;
+    }
+}
+
 /* -------------------------------------------------------------------
  * Task lifecycle
  * ------------------------------------------------------------------- */
@@ -301,6 +332,11 @@ asx_status asx_task_spawn(asx_region_id region,
     g_tasks[idx].captured_state = NULL;
     g_tasks[idx].captured_size = 0;
     g_tasks[idx].captured_dtor = NULL;
+    g_tasks[idx].cancel_phase = 0;
+    g_tasks[idx].cancel_pending = 0;
+    g_tasks[idx].cancel_epoch = 0;
+    g_tasks[idx].cleanup_polls_remaining = 0;
+    memset(&g_tasks[idx].cancel_reason, 0, sizeof(g_tasks[idx].cancel_reason));
 
     r->task_count++;
     r->task_total++;

@@ -1,0 +1,150 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://asupersync.dev/schemas/test_log.schema.json",
+  "title": "ASX Test Log Record (JSONL)",
+  "description": "Schema for structured test log records emitted by all test layers (unit, invariant, conformance, e2e, bench). Each line in the JSONL output must validate against this schema.",
+  "type": "object",
+  "required": ["ts", "run_id", "layer", "subsystem", "status"],
+  "properties": {
+    "ts": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp with timezone (e.g. 2026-02-27T19:00:00Z)"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier for this test run (e.g. unit-20260227T190000Z)"
+    },
+    "layer": {
+      "type": "string",
+      "enum": ["unit", "invariant", "conformance", "e2e", "bench", "fuzz"],
+      "description": "Test layer that produced this record"
+    },
+    "subsystem": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Module or subsystem under test (e.g. core/budget, runtime/scheduler, runtime/cancellation)"
+    },
+    "suite": {
+      "type": "string",
+      "description": "Test suite name (e.g. test_budget, test_scheduler)"
+    },
+    "test": {
+      "type": "string",
+      "description": "Individual test name within the suite"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail", "skip", "error"],
+      "description": "Test result status"
+    },
+    "event_index": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonic event index within this run for ordering"
+    },
+    "profile": {
+      "type": "string",
+      "description": "ASX profile (e.g. CORE, POSIX, HFT, AUTOMOTIVE)"
+    },
+    "codec": {
+      "type": "string",
+      "enum": ["json", "bin"],
+      "description": "Codec in use (for codec-sensitive tests)"
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Deterministic seed for reproducibility"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256:[0-9a-f]{64}|fnv1a:[0-9a-f]{8,16})$",
+      "description": "Semantic digest of test output (sha256 or fnv1a)"
+    },
+    "scenario_id": {
+      "type": "string",
+      "description": "Fixture scenario identifier (conformance/e2e layers)"
+    },
+    "duration_ns": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Test duration in nanoseconds"
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "ASX error code (e.g. ASX_E_INVALID_STATE)"
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable error description"
+        },
+        "file": {
+          "type": "string",
+          "description": "Source file where assertion failed"
+        },
+        "line": {
+          "type": "integer",
+          "description": "Line number of failure"
+        },
+        "assertion": {
+          "type": "string",
+          "description": "Failed assertion expression"
+        }
+      },
+      "description": "Error metadata (present when status is fail or error)"
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "p50_ns": { "type": "integer" },
+        "p95_ns": { "type": "integer" },
+        "p99_ns": { "type": "integer" },
+        "p99_9_ns": { "type": "integer" },
+        "p99_99_ns": { "type": "integer" },
+        "mean_ns": { "type": "integer" },
+        "min_ns": { "type": "integer" },
+        "max_ns": { "type": "integer" },
+        "jitter_ns": { "type": "integer" },
+        "count": { "type": "integer" }
+      },
+      "description": "Performance metrics (bench layer)"
+    },
+    "parity": {
+      "type": "string",
+      "enum": ["pass", "fail", "skip"],
+      "description": "Parity check result (conformance layer)"
+    },
+    "delta_classification": {
+      "type": "string",
+      "enum": ["none", "harness_defect", "c_regression", "spec_defect"],
+      "description": "Delta classification for failures"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "path"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["trace_snapshot", "parity_diff", "minimizer_output", "replay_bundle", "build_log", "stderr_log", "core_dump"],
+            "description": "Artifact type"
+          },
+          "path": {
+            "type": "string",
+            "description": "Relative path to artifact file"
+          },
+          "digest": {
+            "type": "string",
+            "description": "Content digest for verification"
+          }
+        }
+      },
+      "description": "Associated artifact references"
+    }
+  }
+}

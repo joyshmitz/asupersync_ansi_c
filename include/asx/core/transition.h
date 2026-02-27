@@ -27,12 +27,21 @@ ASX_API ASX_MUST_USE asx_status asx_task_transition_check(asx_task_state from, a
 /* Validate an obligation state transition. Returns ASX_OK or ASX_E_INVALID_TRANSITION. */
 ASX_API ASX_MUST_USE asx_status asx_obligation_transition_check(asx_obligation_state from, asx_obligation_state to);
 
-/* Query functions */
+/* Returns nonzero if the region state allows spawning new tasks. */
 ASX_API int asx_region_can_spawn(asx_region_state s);
+
+/* Returns nonzero if the region state allows new work (spawn, reserve). */
 ASX_API int asx_region_can_accept_work(asx_region_state s);
+
+/* Returns nonzero if the region is in a closing or draining state. */
 ASX_API int asx_region_is_closing(asx_region_state s);
+
+/* Returns nonzero if the region state is terminal (closed). */
 ASX_API int asx_region_is_terminal(asx_region_state s);
+
+/* Returns nonzero if the task state is terminal (completed). */
 ASX_API int asx_task_is_terminal(asx_task_state s);
+/* Returns nonzero if the obligation state is terminal (committed/aborted). */
 ASX_API int asx_obligation_is_terminal(asx_obligation_state s);
 
 /* Human-readable state names */

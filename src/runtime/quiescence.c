@@ -66,6 +66,11 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
         st = asx_region_transition_check(ASX_REGION_OPEN, ASX_REGION_CLOSING);
         if (st != ASX_OK) return st;
         r->state = ASX_REGION_CLOSING;
+
+        /* Propagate PARENT cancel to all active tasks in this region.
+         * Tasks observe cancellation via asx_checkpoint() and have
+         * bounded cleanup before forced completion. (bd-2cw.3) */
+        asx_cancel_propagate(id, ASX_CANCEL_PARENT);
     }
 
     /* Step 2: Run scheduler to drain tasks */

@@ -88,7 +88,8 @@ ASX_API uint64_t asx_event_hash_chain(void);
 /* Event serialization                                                 */
 /* ------------------------------------------------------------------ */
 
-/* Serialize all recorded events to JSON array. */
+/* Serialize all recorded events to JSON array.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if out is NULL. */
 ASX_API ASX_MUST_USE asx_status asx_event_log_to_json(asx_codec_buffer *out);
 
 /* Return human-readable string for an event kind. */

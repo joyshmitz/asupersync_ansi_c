@@ -75,11 +75,13 @@ typedef struct {
 /* Initialize snapshot to empty state. */
 ASX_API void asx_runtime_snapshot_init(asx_runtime_snapshot *snap);
 
-/* Capture current runtime state into snapshot. */
+/* Capture current runtime state into snapshot.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if snap is NULL. */
 ASX_API ASX_MUST_USE asx_status asx_runtime_snapshot_capture(
     asx_runtime_snapshot *snap);
 
-/* Serialize snapshot to JSON. */
+/* Serialize snapshot to JSON.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if snap or out is NULL. */
 ASX_API ASX_MUST_USE asx_status asx_runtime_snapshot_to_json(
     const asx_runtime_snapshot *snap,
     asx_codec_buffer *out);

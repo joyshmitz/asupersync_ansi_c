@@ -178,6 +178,55 @@ ASX_API const char *asx_trace_event_kind_str(asx_trace_event_kind kind);
 /* Return human-readable name for a replay result kind. */
 ASX_API const char *asx_replay_result_kind_str(asx_replay_result_kind kind);
 
+/* -------------------------------------------------------------------
+ * Binary trace persistence (bd-2n0.5)
+ *
+ * Provides a platform-independent binary wire format for persisting
+ * trace event sequences across process boundaries. Used for crash/
+ * restart replay continuity: export before shutdown, import after
+ * restart, then verify the replayed scenario matches.
+ *
+ * Wire format (little-endian):
+ *   Header (24 bytes):
+ *     [0..3]   magic      "ASXt" (0x41535874)
+ *     [4..7]   version    1
+ *     [8..11]  event_count
+ *     [12..15] reserved   0
+ *     [16..23] trace_digest (FNV-1a 64-bit)
+ *
+ *   Per event (24 bytes each):
+ *     [0..3]   sequence   (uint32)
+ *     [4..7]   kind       (uint32)
+ *     [8..15]  entity_id  (uint64)
+ *     [16..23] aux        (uint64)
+ * ------------------------------------------------------------------- */
+
+#define ASX_TRACE_BINARY_MAGIC    0x41535874u  /* "ASXt" */
+#define ASX_TRACE_BINARY_VERSION  1u
+#define ASX_TRACE_BINARY_HEADER   24u
+#define ASX_TRACE_BINARY_EVENT    24u
+
+/* Export the current trace to a binary buffer.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if buf/out_len
+ * is NULL, ASX_E_BUFFER_TOO_SMALL if capacity insufficient.
+ * On success, *out_len receives the number of bytes written. */
+ASX_API asx_status asx_trace_export_binary(uint8_t *buf,
+                                            uint32_t capacity,
+                                            uint32_t *out_len);
+
+/* Import a binary trace buffer as the replay reference.
+ * Validates header magic, version, and digest. On success, the
+ * events are loaded as the replay reference (same as
+ * asx_replay_load_reference). Returns ASX_OK on success. */
+ASX_API asx_status asx_trace_import_binary(const uint8_t *buf,
+                                            uint32_t len);
+
+/* Check whether the current trace matches a persisted binary buffer.
+ * Combines import + verify in one call. Returns ASX_OK if the
+ * current trace matches the persisted events. */
+ASX_API asx_status asx_trace_continuity_check(const uint8_t *buf,
+                                               uint32_t len);
+
 #ifdef __cplusplus
 }
 #endif

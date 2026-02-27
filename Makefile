@@ -115,7 +115,8 @@ CORE_SRC := \
 	src/core/cancel.c \
 	src/core/cleanup.c \
 	src/core/ghost.c \
-	src/core/affinity.c
+	src/core/affinity.c \
+	src/core/adaptive.c
 
 RUNTIME_SRC := \
 	src/runtime/hooks.c \
@@ -124,7 +125,9 @@ RUNTIME_SRC := \
 	src/runtime/cancellation.c \
 	src/runtime/quiescence.c \
 	src/runtime/resource.c \
-	src/runtime/trace.c
+	src/runtime/trace.c \
+	src/runtime/hindsight.c \
+	src/runtime/telemetry.c
 
 CHANNEL_SRC := \
 	src/channel/mpsc.c
@@ -186,16 +189,38 @@ INV_TEST_BIN  := $(patsubst tests/%.c,$(TEST_DIR)/%,$(INVARIANT_TEST_SRC))
 # ---------------------------------------------------------------------------
 TEST_CFLAGS := $(ALL_CFLAGS) -I$(CURDIR)/tests -I$(CURDIR)/src
 
+# ---------------------------------------------------------------------------
+# E2E scripts
+# ---------------------------------------------------------------------------
+E2E_SCRIPT_DIR := tests/e2e
+E2E_ALL_SCRIPTS := \
+	$(E2E_SCRIPT_DIR)/core_lifecycle.sh \
+	$(E2E_SCRIPT_DIR)/codec_parity.sh \
+	$(E2E_SCRIPT_DIR)/robustness.sh \
+	$(E2E_SCRIPT_DIR)/robustness_fault.sh \
+	$(E2E_SCRIPT_DIR)/robustness_endian.sh \
+	$(E2E_SCRIPT_DIR)/robustness_exhaustion.sh \
+	$(E2E_SCRIPT_DIR)/hft_microburst.sh \
+	$(E2E_SCRIPT_DIR)/automotive_watchdog.sh \
+	$(E2E_SCRIPT_DIR)/continuity.sh \
+	$(E2E_SCRIPT_DIR)/continuity_restart.sh
+
+E2E_VERTICAL_SCRIPTS := \
+	$(E2E_SCRIPT_DIR)/hft_microburst.sh \
+	$(E2E_SCRIPT_DIR)/automotive_watchdog.sh \
+	$(E2E_SCRIPT_DIR)/continuity.sh \
+	$(E2E_SCRIPT_DIR)/continuity_restart.sh
+
 # ===================================================================
 # PRIMARY TARGETS — map 1:1 to quality gate commands
 # ===================================================================
 
 .PHONY: all build clean install uninstall
-.PHONY: format-check lint
-.PHONY: test test-unit test-invariants
+.PHONY: format-check lint lint-docs
+.PHONY: test test-unit test-invariants test-e2e test-e2e-vertical
 .PHONY: conformance codec-equivalence profile-parity
 .PHONY: fuzz-smoke ci-embedded-matrix
-.PHONY: release
+.PHONY: release bench
 .PHONY: build-gcc build-clang build-msvc build-32 build-64
 .PHONY: build-embedded-mipsel build-embedded-armv7 build-embedded-aarch64
 .PHONY: qemu-smoke
@@ -266,6 +291,13 @@ lint:
 	fi
 
 # ---------------------------------------------------------------------------
+# lint-docs — public API documentation coverage gate (bd-hwb.16)
+# ---------------------------------------------------------------------------
+lint-docs:
+	@echo "[asx] lint-docs: checking public API documentation coverage..."
+	@./tools/ci/check_api_docs.sh
+
+# ---------------------------------------------------------------------------
 # test — run all test suites
 # ---------------------------------------------------------------------------
 test: test-unit test-invariants
@@ -331,6 +363,44 @@ test-invariants: $(INV_TEST_BIN)
 		[ $$fail -eq 0 ] || exit 1; \
 	fi
 
+# ---------------------------------------------------------------------------
+# test-e2e — run all canonical e2e scenario lanes
+# ---------------------------------------------------------------------------
+test-e2e:
+	@echo "[asx] test-e2e: running $(words $(E2E_ALL_SCRIPTS)) script(s)..."
+	@pass=0; fail=0; \
+	for s in $(E2E_ALL_SCRIPTS); do \
+		echo "  RUN  $$(basename $$s)"; \
+		if $$s; then \
+			echo "  PASS $$(basename $$s)"; \
+			pass=$$((pass + 1)); \
+		else \
+			echo "  FAIL $$(basename $$s)"; \
+			fail=$$((fail + 1)); \
+		fi; \
+	done; \
+	echo "[asx] test-e2e: $$pass passed, $$fail failed"; \
+	[ $$fail -eq 0 ] || exit 1
+
+# ---------------------------------------------------------------------------
+# test-e2e-vertical — run HFT/automotive/continuity e2e lanes
+# ---------------------------------------------------------------------------
+test-e2e-vertical:
+	@echo "[asx] test-e2e-vertical: running $(words $(E2E_VERTICAL_SCRIPTS)) script(s)..."
+	@pass=0; fail=0; \
+	for s in $(E2E_VERTICAL_SCRIPTS); do \
+		echo "  RUN  $$(basename $$s)"; \
+		if $$s; then \
+			echo "  PASS $$(basename $$s)"; \
+			pass=$$((pass + 1)); \
+		else \
+			echo "  FAIL $$(basename $$s)"; \
+			fail=$$((fail + 1)); \
+		fi; \
+	done; \
+	echo "[asx] test-e2e-vertical: $$pass passed, $$fail failed"; \
+	[ $$fail -eq 0 ] || exit 1
+
 $(TEST_DIR)/invariant/%: tests/invariant/%.c $(LIB_A) | test-dirs
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
 
@@ -338,6 +408,45 @@ test-dirs:
 	@mkdir -p $(TEST_DIR)/unit/core $(TEST_DIR)/unit/runtime \
 	          $(TEST_DIR)/unit/channel $(TEST_DIR)/unit/time \
 	          $(TEST_DIR)/invariant/lifecycle $(TEST_DIR)/invariant/quiescence
+
+# ---------------------------------------------------------------------------
+# bench — performance benchmark suite (bd-1md.6)
+#
+# Compiles with -O2 for realistic performance measurements.
+# Outputs JSON with p50/p95/p99/p99.9/p99.99 metrics.
+# Usage:
+#   make bench                    # Build and run (human-friendly)
+#   make bench-json               # Build and run (JSON-only to stdout)
+#   make bench-build              # Build only
+# ---------------------------------------------------------------------------
+BENCH_DIR  := $(BUILD_DIR)/bench
+BENCH_SRC  := tests/bench/bench_runtime.c
+BENCH_BIN  := $(BENCH_DIR)/bench_runtime
+
+BENCH_CFLAGS := -std=c99 -Wall -Wextra -Wpedantic -Werror \
+                -Wno-unused-parameter -Wno-unused-result \
+                -Wno-conversion -Wno-sign-conversion \
+                -O2 -DNDEBUG \
+                $(INC_FLAGS) $(PROFILE_DEF) $(CODEC_DEF) $(DET_DEF) \
+                -I$(CURDIR)/tests -I$(CURDIR)/src
+
+.PHONY: bench bench-json bench-build
+
+bench-build: $(BENCH_BIN)
+
+$(BENCH_BIN): $(BENCH_SRC) $(LIB_A) | $(BENCH_DIR)
+	$(CC) $(BENCH_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
+
+$(BENCH_DIR):
+	@mkdir -p $@
+
+bench: bench-build
+	@echo "[asx] bench: running performance benchmarks..."
+	@$(BENCH_BIN)
+	@echo "[asx] bench: complete"
+
+bench-json: bench-build
+	@$(BENCH_BIN) --json
 
 # ---------------------------------------------------------------------------
 # conformance — Rust fixture parity verification
@@ -382,18 +491,79 @@ profile-parity:
 	fi
 
 # ---------------------------------------------------------------------------
-# fuzz-smoke — differential fuzzing smoke test
+# fuzz — differential fuzzing harness (bd-1md.3)
+#
+# Generates random scenario DSL mutations, executes against C runtime,
+# and verifies deterministic self-consistency. Compares against Rust
+# reference fixtures when available.
+#
+# Usage:
+#   make fuzz-build              # Build the fuzz harness
+#   make fuzz-smoke              # CI smoke (100 iterations)
+#   make fuzz-nightly            # Nightly (100000 iterations)
+#   make fuzz-run FUZZ_ARGS="--seed 42 --iterations 5000"
 # ---------------------------------------------------------------------------
-fuzz-smoke:
+FUZZ_DIR := $(BUILD_DIR)/fuzz
+FUZZ_SRC := tests/fuzz/fuzz_differential.c
+FUZZ_BIN := $(FUZZ_DIR)/fuzz_differential
+FUZZ_ARGS ?=
+
+FUZZ_CFLAGS := -std=c99 -Wall -Wextra -Wpedantic -Werror \
+               -Wno-unused-parameter -Wno-unused-result \
+               -Wno-conversion -Wno-sign-conversion \
+               -O2 -DNDEBUG \
+               $(INC_FLAGS) $(PROFILE_DEF) $(CODEC_DEF) $(DET_DEF) \
+               -I$(CURDIR)/tests -I$(CURDIR)/src
+
+.PHONY: fuzz-build fuzz-smoke fuzz-nightly fuzz-run
+
+fuzz-build: $(FUZZ_BIN)
+
+$(FUZZ_BIN): $(FUZZ_SRC) $(LIB_A) | $(FUZZ_DIR)
+	$(CC) $(FUZZ_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
+
+$(FUZZ_DIR):
+	@mkdir -p $@
+
+fuzz-smoke: fuzz-build
 	@echo "[asx] fuzz-smoke: differential fuzzing smoke test..."
-	@if [ -x tools/fuzz/run_smoke.sh ]; then \
-		tools/fuzz/run_smoke.sh; \
-	elif [ "$(FAIL_ON_MISSING_RUNNERS)" = "1" ]; then \
-		echo "[asx] fuzz-smoke: FAIL (runner missing; strict mode)"; \
-		exit 1; \
-	else \
-		echo "[asx] fuzz-smoke: SKIP (fuzzer not yet implemented)"; \
-	fi
+	@$(FUZZ_BIN) --smoke
+
+fuzz-nightly: fuzz-build
+	@echo "[asx] fuzz-nightly: differential fuzzing nightly run..."
+	@$(FUZZ_BIN) --nightly --verbose
+
+fuzz-run: fuzz-build
+	@$(FUZZ_BIN) $(FUZZ_ARGS)
+
+# ---------------------------------------------------------------------------
+# minimize — deterministic counterexample minimizer (bd-1md.4)
+#
+# Reduces failing fuzz scenarios while preserving failure signatures.
+# Uses delta debugging + single-op removal + argument simplification.
+#
+# Usage:
+#   make minimize-build            # Build the minimizer
+#   make minimize-selftest         # Run built-in self-test
+#   make minimize-run MIN_ARGS="--failure-digest abc123 --verbose"
+# ---------------------------------------------------------------------------
+MIN_SRC  := tests/fuzz/fuzz_minimize.c
+MIN_BIN  := $(FUZZ_DIR)/fuzz_minimize
+MIN_ARGS ?=
+
+.PHONY: minimize-build minimize-selftest minimize-run
+
+minimize-build: $(MIN_BIN)
+
+$(MIN_BIN): $(MIN_SRC) $(LIB_A) | $(FUZZ_DIR)
+	$(CC) $(FUZZ_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
+
+minimize-selftest: minimize-build
+	@echo "[asx] minimize-selftest: running minimizer self-test..."
+	@$(MIN_BIN) --selftest --verbose
+
+minimize-run: minimize-build
+	@$(MIN_BIN) $(MIN_ARGS)
 
 # ---------------------------------------------------------------------------
 # ci-embedded-matrix — cross-target embedded builds + QEMU
@@ -500,10 +670,10 @@ qemu-smoke:
 # check — combined gate for PR/push CI
 # ---------------------------------------------------------------------------
 .PHONY: check check-ci
-check: format-check lint build test
+check: format-check lint lint-docs build test
 
 check-ci: CI=1
-check-ci: format-check lint build test conformance codec-equivalence profile-parity fuzz-smoke ci-embedded-matrix
+check-ci: format-check lint build test test-e2e-vertical conformance codec-equivalence profile-parity fuzz-smoke ci-embedded-matrix
 
 # ---------------------------------------------------------------------------
 # clean
@@ -522,14 +692,20 @@ help:
 	@echo "  build              Build library (warnings-as-errors)"
 	@echo "  format-check       Verify source formatting"
 	@echo "  lint               Static analysis gate"
+	@echo "  lint-docs          Public API documentation coverage gate"
 	@echo "  test               Run all tests (unit + invariant)"
 	@echo "  test-unit          Unit tests per module"
 	@echo "  test-invariants    Lifecycle invariant tests"
+	@echo "  test-e2e           Run all e2e scenario lanes"
+	@echo "  test-e2e-vertical  Run HFT/automotive/continuity e2e lanes"
 	@echo "  conformance        Rust fixture parity verification"
 	@echo "  codec-equivalence  JSON vs BIN codec equivalence"
 	@echo "  profile-parity     Cross-profile semantic digest parity"
 	@echo "  fuzz-smoke         Differential fuzzing smoke test"
+	@echo "  minimize-selftest  Counterexample minimizer self-test"
 	@echo "  ci-embedded-matrix Cross-target embedded builds"
+	@echo "  bench              Performance benchmarks (JSON output)"
+	@echo "  bench-json         Benchmarks (JSON-only to stdout)"
 	@echo "  release            Optimized production build"
 	@echo "  install            Install to PREFIX (default /usr/local)"
 	@echo "  check              Combined gate (format+lint+build+test)"

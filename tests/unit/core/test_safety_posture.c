@@ -469,6 +469,36 @@ TEST(poison_reset_clears_on_new_region)
     ASSERT_EQ(is_poisoned, 0);
 }
 
+TEST(containment_policy_mapping_by_profile)
+{
+    ASSERT_EQ(asx_containment_policy_for_profile(ASX_SAFETY_DEBUG),
+              ASX_CONTAIN_FAIL_FAST);
+    ASSERT_EQ(asx_containment_policy_for_profile(ASX_SAFETY_HARDENED),
+              ASX_CONTAIN_POISON_REGION);
+    ASSERT_EQ(asx_containment_policy_for_profile(ASX_SAFETY_RELEASE),
+              ASX_CONTAIN_ERROR_ONLY);
+}
+
+TEST(contain_fault_returns_fault_and_follows_active_policy)
+{
+    asx_region_id rid;
+    asx_containment_policy policy;
+    asx_status fault = ASX_E_INVALID_STATE;
+    int is_poisoned;
+
+    ASSERT_EQ(asx_region_open(&rid), ASX_OK);
+    policy = asx_containment_policy_active();
+
+    ASSERT_EQ(asx_region_contain_fault(rid, fault), fault);
+    ASSERT_EQ(asx_region_is_poisoned(rid, &is_poisoned), ASX_OK);
+
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(is_poisoned, 1);
+    } else {
+        ASSERT_EQ(is_poisoned, 0);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
@@ -555,6 +585,10 @@ int main(void)
     asx_runtime_reset(); asx_ghost_reset();
     RUN_TEST(poison_does_not_corrupt_region_state);
     RUN_TEST(poison_reset_clears_on_new_region);
+    asx_runtime_reset(); asx_ghost_reset();
+    RUN_TEST(containment_policy_mapping_by_profile);
+    asx_runtime_reset(); asx_ghost_reset();
+    RUN_TEST(contain_fault_returns_fault_and_follows_active_policy);
 
     TEST_REPORT();
     return test_failures;
