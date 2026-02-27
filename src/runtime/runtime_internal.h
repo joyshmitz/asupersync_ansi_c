@@ -26,6 +26,7 @@ typedef struct {
     uint32_t           task_total;     /* total spawned tasks */
     uint16_t           generation;     /* increments on slot reclaim */
     int                alive;          /* 1 if slot in use */
+    int                poisoned;       /* 1 if region has been poisoned (containment) */
     asx_cleanup_stack  cleanup;        /* LIFO cleanup for finalization */
     uint8_t            capture_arena[ASX_REGION_CAPTURE_ARENA_BYTES];
     uint32_t           capture_used;

@@ -14,6 +14,7 @@
 #include <asx/runtime/runtime.h>
 #include <asx/core/transition.h>
 #include <asx/core/cleanup.h>
+#include <asx/core/ghost.h>
 #include "runtime_internal.h"
 
 /* -------------------------------------------------------------------
@@ -61,6 +62,7 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
 
     /* Step 1: Close the region if still open */
     if (r->state == ASX_REGION_OPEN) {
+        asx_ghost_check_region_transition(id, ASX_REGION_OPEN, ASX_REGION_CLOSING);
         st = asx_region_transition_check(ASX_REGION_OPEN, ASX_REGION_CLOSING);
         if (st != ASX_OK) return st;
         r->state = ASX_REGION_CLOSING;
@@ -80,6 +82,8 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
     /* Step 3: Advance through closing protocol */
     if (r->state == ASX_REGION_CLOSING) {
         /* No children (walking skeleton) — fast path: skip Draining */
+        asx_ghost_check_region_transition(id, ASX_REGION_CLOSING,
+                                               ASX_REGION_FINALIZING);
         st = asx_region_transition_check(ASX_REGION_CLOSING,
                                          ASX_REGION_FINALIZING);
         if (st != ASX_OK) return st;
@@ -87,6 +91,8 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
     }
 
     if (r->state == ASX_REGION_DRAINING) {
+        asx_ghost_check_region_transition(id, ASX_REGION_DRAINING,
+                                               ASX_REGION_FINALIZING);
         st = asx_region_transition_check(ASX_REGION_DRAINING,
                                          ASX_REGION_FINALIZING);
         if (st != ASX_OK) return st;
@@ -94,9 +100,14 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
     }
 
     if (r->state == ASX_REGION_FINALIZING) {
+        /* Ghost linearity monitor: check for leaked obligations before close */
+        (void)asx_ghost_check_obligation_leaks(id);
+
         /* Drain cleanup stack in LIFO order before closing */
         asx_cleanup_drain(&r->cleanup);
 
+        asx_ghost_check_region_transition(id, ASX_REGION_FINALIZING,
+                                               ASX_REGION_CLOSED);
         st = asx_region_transition_check(ASX_REGION_FINALIZING,
                                          ASX_REGION_CLOSED);
         if (st != ASX_OK) return st;

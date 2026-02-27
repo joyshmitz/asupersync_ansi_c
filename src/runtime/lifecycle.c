@@ -13,6 +13,7 @@
 #include <asx/asx.h>
 #include <asx/runtime/runtime.h>
 #include <asx/core/transition.h>
+#include <asx/core/ghost.h>
 #include <string.h>
 #include "runtime_internal.h"
 
@@ -66,6 +67,9 @@ void asx_runtime_reset(void)
         g_obligations[i].alive      = 0;
     }
     g_obligation_count = 0;
+
+    /* Reset ghost safety monitors */
+    asx_ghost_reset();
 }
 
 /* -------------------------------------------------------------------
@@ -184,6 +188,7 @@ asx_status asx_region_open(asx_region_id *out_id)
     g_regions[idx].task_count = 0;
     g_regions[idx].task_total = 0;
     g_regions[idx].alive      = 1;
+    g_regions[idx].poisoned   = 0;
     asx_cleanup_init(&g_regions[idx].cleanup);
     g_regions[idx].capture_used = 0;
 
@@ -206,6 +211,10 @@ asx_status asx_region_close(asx_region_id id)
 
     st = asx_region_slot_lookup(id, &r);
     if (st != ASX_OK) return st;
+    if (r->poisoned) return ASX_E_REGION_POISONED;
+
+    /* Ghost protocol monitor: record transition for diagnostics */
+    asx_ghost_check_region_transition(id, r->state, ASX_REGION_CLOSING);
 
     /* Transition Open -> Closing */
     st = asx_region_transition_check(r->state, ASX_REGION_CLOSING);
@@ -248,6 +257,7 @@ asx_status asx_task_spawn(asx_region_id region,
 
     st = asx_region_slot_lookup(region, &r);
     if (st != ASX_OK) return st;
+    if (r->poisoned) return ASX_E_REGION_POISONED;
 
     /* Only open regions can spawn tasks */
     if (!asx_region_can_spawn(r->state)) return ASX_E_REGION_NOT_OPEN;
@@ -389,6 +399,7 @@ asx_status asx_obligation_reserve(asx_region_id region,
 
     st = asx_region_slot_lookup(region, &r);
     if (st != ASX_OK) return st;
+    if (r->poisoned) return ASX_E_REGION_POISONED;
 
     /* Only open regions can reserve obligations */
     if (!asx_region_can_spawn(r->state)) return ASX_E_REGION_NOT_OPEN;
@@ -407,6 +418,10 @@ asx_status asx_obligation_reserve(asx_region_id region,
                                asx_handle_pack_index(
                                    g_obligations[idx].generation,
                                    (uint16_t)idx));
+
+    /* Ghost linearity monitor: track obligation reservation */
+    asx_ghost_obligation_reserved(*out_id);
+
     return ASX_OK;
 }
 
@@ -418,10 +433,17 @@ asx_status asx_obligation_commit(asx_obligation_id id)
     st = asx_obligation_slot_lookup(id, &o);
     if (st != ASX_OK) return st;
 
+    /* Ghost protocol monitor: validate obligation transition */
+    (void)asx_ghost_check_obligation_transition(id, o->state, ASX_OBLIGATION_COMMITTED);
+
     st = asx_obligation_transition_check(o->state, ASX_OBLIGATION_COMMITTED);
     if (st != ASX_OK) return st;
 
     o->state = ASX_OBLIGATION_COMMITTED;
+
+    /* Ghost linearity monitor: track obligation resolution */
+    asx_ghost_obligation_resolved(id);
+
     return ASX_OK;
 }
 
@@ -433,10 +455,17 @@ asx_status asx_obligation_abort(asx_obligation_id id)
     st = asx_obligation_slot_lookup(id, &o);
     if (st != ASX_OK) return st;
 
+    /* Ghost protocol monitor: validate obligation transition */
+    (void)asx_ghost_check_obligation_transition(id, o->state, ASX_OBLIGATION_ABORTED);
+
     st = asx_obligation_transition_check(o->state, ASX_OBLIGATION_ABORTED);
     if (st != ASX_OK) return st;
 
     o->state = ASX_OBLIGATION_ABORTED;
+
+    /* Ghost linearity monitor: track obligation resolution */
+    asx_ghost_obligation_resolved(id);
+
     return ASX_OK;
 }
 

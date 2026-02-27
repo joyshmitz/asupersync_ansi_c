@@ -88,6 +88,25 @@ ASX_API ASX_MUST_USE asx_status asx_region_get_state(asx_region_id id,
                                                      asx_region_state *out_state);
 
 /* -------------------------------------------------------------------
+ * Region poison / containment
+ *
+ * When a region is poisoned, all mutating operations (spawn, close,
+ * schedule) return ASX_E_REGION_POISONED. Read-only queries (get_state,
+ * is_poisoned) remain available for diagnostics. Poisoning is
+ * irreversible within a region lifetime — the region must be drained
+ * or abandoned. This provides deterministic containment after
+ * invariant violations without undefined behavior.
+ * ------------------------------------------------------------------- */
+
+/* Poison a region, preventing further mutating operations.
+ * Returns ASX_OK on success or if already poisoned (idempotent). */
+ASX_API ASX_MUST_USE asx_status asx_region_poison(asx_region_id id);
+
+/* Query whether a region is poisoned. Sets *out to 1 if poisoned. */
+ASX_API ASX_MUST_USE asx_status asx_region_is_poisoned(asx_region_id id,
+                                                        int *out);
+
+/* -------------------------------------------------------------------
  * Task lifecycle
  * ------------------------------------------------------------------- */
 
@@ -143,6 +162,41 @@ ASX_API ASX_MUST_USE asx_status asx_obligation_get_state(asx_obligation_id id,
  * the budget is exhausted. Returns ASX_OK when quiescent. */
 ASX_API ASX_MUST_USE asx_status asx_scheduler_run(asx_region_id region,
                                                   asx_budget *budget);
+
+/* -------------------------------------------------------------------
+ * Scheduler event sequencing (deterministic replay support)
+ *
+ * The scheduler emits a monotonically increasing sequence number for
+ * each event (task poll, task completion, budget exhaustion). These
+ * are deterministic for identical input and seed — suitable for
+ * replay identity verification.
+ *
+ * Tie-break rule: tasks are polled in arena index order within a
+ * round. Index order is stable and deterministic.
+ * ------------------------------------------------------------------- */
+
+typedef enum {
+    ASX_SCHED_EVENT_POLL       = 0,  /* task polled */
+    ASX_SCHED_EVENT_COMPLETE   = 1,  /* task completed (OK or error) */
+    ASX_SCHED_EVENT_BUDGET     = 2,  /* budget exhausted */
+    ASX_SCHED_EVENT_QUIESCENT  = 3   /* all tasks complete */
+} asx_scheduler_event_kind;
+
+typedef struct {
+    asx_scheduler_event_kind kind;
+    asx_task_id              task_id;   /* ASX_INVALID_ID for non-task events */
+    uint32_t                 sequence;  /* monotonic per scheduler_run call */
+    uint32_t                 round;     /* scheduler round (0-based) */
+} asx_scheduler_event;
+
+/* Read the total event count from the last scheduler_run call. */
+ASX_API uint32_t asx_scheduler_event_count(void);
+
+/* Read event at index (0-based). Returns 1 on success, 0 on out-of-bounds. */
+ASX_API int asx_scheduler_event_get(uint32_t index, asx_scheduler_event *out);
+
+/* Reset event log (called automatically by asx_scheduler_run). */
+ASX_API void asx_scheduler_event_reset(void);
 
 /* -------------------------------------------------------------------
  * Quiescence

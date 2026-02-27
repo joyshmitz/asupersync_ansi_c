@@ -1,12 +1,13 @@
 /*
- * scheduler.c — deterministic scheduler loop (walking skeleton)
+ * scheduler.c — deterministic scheduler loop with event sequencing
  *
- * Minimal round-robin scheduler for bd-ix8.8: polls all non-completed
- * tasks in index order (deterministic tie-break) until all complete
- * or budget is exhausted.
+ * Round-robin scheduler that polls all non-completed tasks in arena
+ * index order (deterministic tie-break). Emits a monotonic event
+ * sequence for replay identity verification.
  *
- * Phase 3 will add priority scheduling, fairness, and preemption
- * (bd-2cw.2).
+ * Tie-break rule: tasks are polled in ascending arena index within
+ * each round. This ordering is stable and deterministic for any
+ * given input and seed.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -15,6 +16,52 @@
 #include <asx/runtime/runtime.h>
 #include <asx/core/transition.h>
 #include "runtime_internal.h"
+
+/* -------------------------------------------------------------------
+ * Event log (ring buffer for deterministic sequencing)
+ * ------------------------------------------------------------------- */
+
+#define ASX_SCHED_EVENT_LOG_CAPACITY 256u
+
+static asx_scheduler_event g_event_log[ASX_SCHED_EVENT_LOG_CAPACITY];
+static uint32_t g_event_count = 0;
+
+static void sched_emit(asx_scheduler_event_kind kind,
+                       asx_task_id tid,
+                       uint32_t round)
+{
+    if (g_event_count < ASX_SCHED_EVENT_LOG_CAPACITY) {
+        asx_scheduler_event *e = &g_event_log[g_event_count];
+        e->kind = kind;
+        e->task_id = tid;
+        e->sequence = g_event_count;
+        e->round = round;
+    }
+    g_event_count++;
+}
+
+uint32_t asx_scheduler_event_count(void)
+{
+    return g_event_count;
+}
+
+int asx_scheduler_event_get(uint32_t index, asx_scheduler_event *out)
+{
+    if (out == NULL) return 0;
+    if (index >= g_event_count) return 0;
+    if (index >= ASX_SCHED_EVENT_LOG_CAPACITY) return 0;
+    *out = g_event_log[index];
+    return 1;
+}
+
+void asx_scheduler_event_reset(void)
+{
+    g_event_count = 0;
+}
+
+/* -------------------------------------------------------------------
+ * Task captured-state release
+ * ------------------------------------------------------------------- */
 
 static void asx_task_release_capture(asx_task_slot *task)
 {
@@ -28,6 +75,10 @@ static void asx_task_release_capture(asx_task_slot *task)
 
 /* -------------------------------------------------------------------
  * Scheduler: run all tasks in a region until completion or budget
+ *
+ * Ordering invariant: tasks are polled in ascending arena index
+ * within each round. This produces a deterministic event stream
+ * for any given input and seed combination.
  * ------------------------------------------------------------------- */
 
 asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
@@ -35,6 +86,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
     asx_region_slot *rslot;
     asx_status st;
     uint32_t active;
+    uint32_t round;
     uint32_t i;
 
     if (budget == NULL) return ASX_E_INVALID_ARGUMENT;
@@ -42,10 +94,14 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
     st = asx_region_slot_lookup(region, &rslot);
     if (st != ASX_OK) return st;
 
+    /* Reset event log for this scheduler invocation */
+    asx_scheduler_event_reset();
+
     /* Scheduler loop: round-robin poll until all tasks complete */
-    for (;;) {
+    for (round = 0; ; round++) {
         /* Check budget exhaustion */
         if (asx_budget_is_exhausted(budget)) {
+            sched_emit(ASX_SCHED_EVENT_BUDGET, ASX_INVALID_ID, round);
             return ASX_E_POLL_BUDGET_EXHAUSTED;
         }
 
@@ -64,6 +120,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
 
             /* Consume one poll unit */
             if (asx_budget_consume_poll(budget) == 0) {
+                sched_emit(ASX_SCHED_EVENT_BUDGET, ASX_INVALID_ID, round);
                 return ASX_E_POLL_BUDGET_EXHAUSTED;
             }
 
@@ -78,6 +135,9 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                                   asx_handle_pack_index(
                                       t->generation, (uint16_t)i));
 
+            /* Emit poll event */
+            sched_emit(ASX_SCHED_EVENT_POLL, tid, round);
+
             /* Call the task's poll function */
             asx_error_ledger_bind_task(tid);
             poll_result = t->poll_fn(t->user_data, tid);
@@ -85,22 +145,29 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
 
             if (poll_result == ASX_OK) {
                 /* Task completed successfully */
+                (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_COMPLETED);
                 t->state = ASX_TASK_COMPLETED;
                 t->outcome = asx_outcome_make(ASX_OUTCOME_OK);
                 asx_task_release_capture(t);
                 rslot->task_count--;
+                active--;
+                sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
             } else if (poll_result != ASX_E_PENDING) {
                 /* Task failed — mark as completed with error */
+                (void)asx_ghost_check_task_transition(tid, t->state, ASX_TASK_COMPLETED);
                 t->state = ASX_TASK_COMPLETED;
                 t->outcome = asx_outcome_make(ASX_OUTCOME_ERR);
                 asx_task_release_capture(t);
                 rslot->task_count--;
+                active--;
+                sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
             }
             /* ASX_E_PENDING: task not ready, continue polling next task */
         }
 
         /* No active tasks left — quiescent */
         if (active == 0) {
+            sched_emit(ASX_SCHED_EVENT_QUIESCENT, ASX_INVALID_ID, round);
             return ASX_OK;
         }
     }

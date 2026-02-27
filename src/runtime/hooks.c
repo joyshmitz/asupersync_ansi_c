@@ -12,9 +12,16 @@
 
 #include <asx/asx_config.h>
 #include <asx/codec/codec.h>
+#include <asx/codec/equivalence.h>
+#include "codec_internal.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+
+#if CHAR_BIT != 8
+#error "asx binary codec requires 8-bit bytes"
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Default hook implementations                                       */
@@ -67,6 +74,69 @@ static asx_status default_ghost_reactor_wait(void *ctx, uint64_t logical_step,
 
 static asx_runtime_hooks g_hooks;
 static int g_hooks_installed = 0;
+
+/* ------------------------------------------------------------------ */
+/* Safety profile queries                                             */
+/* ------------------------------------------------------------------ */
+
+asx_safety_profile asx_safety_profile_active(void) {
+    return (asx_safety_profile)ASX_SAFETY_PROFILE_SELECTED;
+}
+
+const char *asx_safety_profile_str(asx_safety_profile profile) {
+    switch (profile) {
+        case ASX_SAFETY_DEBUG:    return "debug";
+        case ASX_SAFETY_HARDENED: return "hardened";
+        case ASX_SAFETY_RELEASE:  return "release";
+    }
+    return "unknown";
+}
+
+/* ------------------------------------------------------------------ */
+/* Fault injection state (deterministic-mode only)                    */
+/* ------------------------------------------------------------------ */
+
+#define ASX_FAULT_MAX_ACTIVE 8u
+
+static asx_fault_injection g_faults[ASX_FAULT_MAX_ACTIVE];
+static uint32_t g_fault_count = 0;
+static uint32_t g_fault_clock_calls = 0;
+static uint32_t g_fault_entropy_calls = 0;
+static uint32_t g_fault_alloc_calls = 0;
+
+asx_status asx_fault_inject(const asx_fault_injection *fault) {
+    if (!fault) return ASX_E_INVALID_ARGUMENT;
+    if (fault->kind == ASX_FAULT_NONE) return ASX_E_INVALID_ARGUMENT;
+    if (g_fault_count >= ASX_FAULT_MAX_ACTIVE)
+        return ASX_E_RESOURCE_EXHAUSTED;
+    g_faults[g_fault_count] = *fault;
+    g_fault_count++;
+    return ASX_OK;
+}
+
+asx_status asx_fault_clear(void) {
+    memset(g_faults, 0, sizeof(g_faults));
+    g_fault_count = 0;
+    g_fault_clock_calls = 0;
+    g_fault_entropy_calls = 0;
+    g_fault_alloc_calls = 0;
+    return ASX_OK;
+}
+
+uint32_t asx_fault_injection_count(void) {
+    return g_fault_count;
+}
+
+/* Check whether a fault should fire; returns 1 if fault is active.
+ * Updates the fault's internal tracking via call_counter. */
+static int fault_should_fire(asx_fault_injection *f, uint32_t call_number) {
+    if (call_number < f->trigger_after) return 0;
+    if (f->trigger_count > 0) {
+        uint32_t injected = call_number - f->trigger_after;
+        if (injected >= f->trigger_count) return 0;
+    }
+    return 1;
+}
 
 /* ------------------------------------------------------------------ */
 /* Hook initialization                                                */
@@ -161,10 +231,22 @@ asx_status asx_runtime_seal_allocator(void) {
 
 asx_status asx_runtime_alloc(size_t size, void **out_ptr) {
     void *p;
+    uint32_t i;
+
     if (!out_ptr) return ASX_E_INVALID_ARGUMENT;
     if (!g_hooks_installed) return ASX_E_INVALID_STATE;
     if (g_hooks.allocator_sealed) return ASX_E_ALLOCATOR_SEALED;
     if (!g_hooks.allocator.malloc_fn) return ASX_E_INVALID_STATE;
+
+    /* Check for allocation fault injection */
+    for (i = 0; i < g_fault_count; i++) {
+        if (g_faults[i].kind == ASX_FAULT_ALLOC_FAIL &&
+            fault_should_fire(&g_faults[i], g_fault_alloc_calls)) {
+            g_fault_alloc_calls++;
+            return ASX_E_RESOURCE_EXHAUSTED;
+        }
+    }
+    g_fault_alloc_calls++;
 
     p = g_hooks.allocator.malloc_fn(g_hooks.allocator.ctx, size);
     if (!p) return ASX_E_RESOURCE_EXHAUSTED;
@@ -193,23 +275,46 @@ asx_status asx_runtime_free(void *ptr) {
 }
 
 asx_status asx_runtime_now_ns(asx_time *out_now) {
+    asx_time raw;
+    uint32_t i;
+
     if (!out_now) return ASX_E_INVALID_ARGUMENT;
     if (!g_hooks_installed) return ASX_E_INVALID_STATE;
 
 #if ASX_DETERMINISTIC
     if (g_hooks.clock.logical_now_ns_fn) {
-        *out_now = g_hooks.clock.logical_now_ns_fn(g_hooks.clock.ctx);
-        return ASX_OK;
-    }
+        raw = g_hooks.clock.logical_now_ns_fn(g_hooks.clock.ctx);
+    } else
 #endif
     if (g_hooks.clock.now_ns_fn) {
-        *out_now = g_hooks.clock.now_ns_fn(g_hooks.clock.ctx);
-        return ASX_OK;
+        raw = g_hooks.clock.now_ns_fn(g_hooks.clock.ctx);
+    } else {
+        return ASX_E_INVALID_STATE;
     }
-    return ASX_E_INVALID_STATE;
+
+    /* Apply clock fault injection */
+    for (i = 0; i < g_fault_count; i++) {
+        if (g_faults[i].kind == ASX_FAULT_CLOCK_SKEW &&
+            fault_should_fire(&g_faults[i], g_fault_clock_calls)) {
+            raw += (asx_time)g_faults[i].param;
+        } else if (g_faults[i].kind == ASX_FAULT_CLOCK_REVERSE &&
+                   fault_should_fire(&g_faults[i], g_fault_clock_calls)) {
+            if (raw >= (asx_time)g_faults[i].param) {
+                raw -= (asx_time)g_faults[i].param;
+            } else {
+                raw = 0;
+            }
+        }
+    }
+    g_fault_clock_calls++;
+
+    *out_now = raw;
+    return ASX_OK;
 }
 
 asx_status asx_runtime_random_u64(uint64_t *out_value) {
+    uint32_t i;
+
     if (!out_value) return ASX_E_INVALID_ARGUMENT;
     if (!g_hooks_installed) return ASX_E_INVALID_STATE;
 
@@ -220,6 +325,16 @@ asx_status asx_runtime_random_u64(uint64_t *out_value) {
 #endif
     if (!g_hooks.entropy.random_u64_fn) return ASX_E_INVALID_STATE;
     *out_value = g_hooks.entropy.random_u64_fn(g_hooks.entropy.ctx);
+
+    /* Apply entropy fault injection */
+    for (i = 0; i < g_fault_count; i++) {
+        if (g_faults[i].kind == ASX_FAULT_ENTROPY_CONST &&
+            fault_should_fire(&g_faults[i], g_fault_entropy_calls)) {
+            *out_value = g_faults[i].param;
+        }
+    }
+    g_fault_entropy_calls++;
+
     return ASX_OK;
 }
 
@@ -927,7 +1042,7 @@ static asx_status asx_codec_buffer_reserve(asx_codec_buffer *buf, size_t additio
     return ASX_OK;
 }
 
-static asx_status asx_codec_buffer_append_bytes(asx_codec_buffer *buf,
+asx_status asx_codec_buffer_append_bytes(asx_codec_buffer *buf,
                                                 const char *bytes,
                                                 size_t len)
 {
@@ -946,7 +1061,7 @@ static asx_status asx_codec_buffer_append_bytes(asx_codec_buffer *buf,
     return ASX_OK;
 }
 
-static asx_status asx_codec_buffer_append_cstr(asx_codec_buffer *buf, const char *text)
+asx_status asx_codec_buffer_append_cstr(asx_codec_buffer *buf, const char *text)
 {
     if (text == NULL) {
         return ASX_E_INVALID_ARGUMENT;
@@ -954,12 +1069,12 @@ static asx_status asx_codec_buffer_append_cstr(asx_codec_buffer *buf, const char
     return asx_codec_buffer_append_bytes(buf, text, strlen(text));
 }
 
-static asx_status asx_codec_buffer_append_char(asx_codec_buffer *buf, char ch)
+asx_status asx_codec_buffer_append_char(asx_codec_buffer *buf, char ch)
 {
     return asx_codec_buffer_append_bytes(buf, &ch, 1u);
 }
 
-static asx_status asx_codec_buffer_append_u64(asx_codec_buffer *buf, uint64_t value)
+asx_status asx_codec_buffer_append_u64(asx_codec_buffer *buf, uint64_t value)
 {
     char tmp[32];
     int n;
@@ -971,7 +1086,7 @@ static asx_status asx_codec_buffer_append_u64(asx_codec_buffer *buf, uint64_t va
     return asx_codec_buffer_append_bytes(buf, tmp, (size_t)n);
 }
 
-static asx_status asx_codec_buffer_append_json_string(asx_codec_buffer *buf, const char *text)
+asx_status asx_codec_buffer_append_json_string(asx_codec_buffer *buf, const char *text)
 {
     const unsigned char *p;
     asx_status st;
@@ -1031,7 +1146,7 @@ static asx_status asx_codec_buffer_append_json_string(asx_codec_buffer *buf, con
     return asx_codec_buffer_append_char(buf, '"');
 }
 
-static asx_status asx_codec_buffer_append_field_prefix(asx_codec_buffer *buf, int *is_first)
+asx_status asx_codec_buffer_append_field_prefix(asx_codec_buffer *buf, int *is_first)
 {
     asx_status st;
 
@@ -1043,7 +1158,7 @@ static asx_status asx_codec_buffer_append_field_prefix(asx_codec_buffer *buf, in
     return st;
 }
 
-static asx_status asx_codec_buffer_append_string_field(asx_codec_buffer *buf,
+asx_status asx_codec_buffer_append_string_field(asx_codec_buffer *buf,
                                                        int *is_first,
                                                        const char *key,
                                                        const char *value)
@@ -1065,7 +1180,7 @@ static asx_status asx_codec_buffer_append_string_field(asx_codec_buffer *buf,
     return asx_codec_buffer_append_json_string(buf, value);
 }
 
-static asx_status asx_codec_buffer_append_u64_field(asx_codec_buffer *buf,
+asx_status asx_codec_buffer_append_u64_field(asx_codec_buffer *buf,
                                                     int *is_first,
                                                     const char *key,
                                                     uint64_t value)
@@ -1462,32 +1577,780 @@ asx_status asx_codec_fixture_replay_key(const asx_canonical_fixture *fixture,
     return asx_codec_buffer_append_char(out_key, '}');
 }
 
-static asx_status asx_codec_encode_bin_unsupported(const asx_canonical_fixture *fixture,
-                                                   asx_codec_buffer *out_payload)
+static asx_status asx_codec_decode_fixture_json_payload(const void *payload,
+                                                        size_t payload_len,
+                                                        asx_canonical_fixture *out_fixture)
 {
-    (void)fixture;
-    (void)out_payload;
-    return ASX_E_INVALID_STATE;
+    char *copy;
+    asx_status st;
+
+    if (payload == NULL || out_fixture == NULL || payload_len == 0u) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (payload_len + 1u < payload_len) {
+        return ASX_E_RESOURCE_EXHAUSTED;
+    }
+
+    copy = (char *)malloc(payload_len + 1u);
+    if (copy == NULL) {
+        return ASX_E_RESOURCE_EXHAUSTED;
+    }
+    memcpy(copy, payload, payload_len);
+    copy[payload_len] = '\0';
+
+    st = asx_codec_decode_fixture_json(copy, out_fixture);
+    free(copy);
+    return st;
 }
 
-static asx_status asx_codec_decode_bin_unsupported(const char *payload,
-                                                   asx_canonical_fixture *out_fixture)
+enum {
+    ASX_CODEC_BIN_WIRE_VARINT = 0u,
+    ASX_CODEC_BIN_WIRE_BYTES  = 2u,
+    ASX_CODEC_BIN_WIRE_MASK   = 0x3u
+};
+
+enum {
+    ASX_CODEC_BIN_TAG_SCENARIO_ID                 = 1u,
+    ASX_CODEC_BIN_TAG_FIXTURE_SCHEMA_VERSION      = 2u,
+    ASX_CODEC_BIN_TAG_SCENARIO_DSL_VERSION        = 3u,
+    ASX_CODEC_BIN_TAG_PROFILE                     = 4u,
+    ASX_CODEC_BIN_TAG_CODEC                       = 5u,
+    ASX_CODEC_BIN_TAG_SEED                        = 6u,
+    ASX_CODEC_BIN_TAG_INPUT_JSON                  = 7u,
+    ASX_CODEC_BIN_TAG_EXPECTED_EVENTS_JSON        = 8u,
+    ASX_CODEC_BIN_TAG_EXPECTED_FINAL_SNAPSHOT_JSON = 9u,
+    ASX_CODEC_BIN_TAG_EXPECTED_ERROR_CODES_JSON   = 10u,
+    ASX_CODEC_BIN_TAG_SEMANTIC_DIGEST             = 11u,
+    ASX_CODEC_BIN_TAG_RUST_BASELINE_COMMIT        = 12u,
+    ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_COMMIT_HASH  = 13u,
+    ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_RELEASE      = 14u,
+    ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_HOST         = 15u,
+    ASX_CODEC_BIN_TAG_CARGO_LOCK_SHA256           = 16u,
+    ASX_CODEC_BIN_TAG_CAPTURE_RUN_ID              = 17u
+};
+
+enum {
+    ASX_CODEC_BIN_HEADER_SIZE = 11u,
+    ASX_CODEC_BIN_CHECKSUM_SIZE = 4u
+};
+
+static const unsigned char g_asx_codec_bin_magic[4] = {'A', 'S', 'X', 'B'};
+
+typedef struct {
+    const unsigned char *payload;
+    size_t payload_len;
+    uint8_t frame_schema_version;
+    uint8_t message_type;
+    uint8_t flags;
+} asx_codec_bin_frame_view;
+
+static int asx_codec_slice_nonempty(asx_codec_slice slice)
 {
-    (void)payload;
-    (void)out_fixture;
-    return ASX_E_INVALID_STATE;
+    return slice.ptr != NULL && slice.len > 0u;
+}
+
+static int asx_codec_slice_json_prefix(asx_codec_slice slice, char expected_first_char)
+{
+    size_t i;
+    const unsigned char *bytes;
+
+    if (!asx_codec_slice_nonempty(slice)) {
+        return 0;
+    }
+
+    bytes = (const unsigned char *)slice.ptr;
+    i = 0u;
+    while (i < slice.len) {
+        if (bytes[i] != ' ' && bytes[i] != '\t' && bytes[i] != '\r' && bytes[i] != '\n') {
+            return bytes[i] == (unsigned char)expected_first_char;
+        }
+        i++;
+    }
+    return 0;
+}
+
+static int asx_codec_slice_contains(asx_codec_slice haystack, const char *needle)
+{
+    size_t i;
+    size_t needle_len;
+
+    if (!asx_codec_slice_nonempty(haystack) || needle == NULL) {
+        return 0;
+    }
+    needle_len = strlen(needle);
+    if (needle_len == 0u || haystack.len < needle_len) {
+        return 0;
+    }
+
+    for (i = 0u; i + needle_len <= haystack.len; i++) {
+        if (memcmp(haystack.ptr + i, needle, needle_len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int asx_codec_slice_matches(asx_codec_slice slice, const char *expected)
+{
+    size_t expected_len;
+
+    if (!asx_codec_slice_nonempty(slice) || expected == NULL) {
+        return 0;
+    }
+    expected_len = strlen(expected);
+    if (slice.len != expected_len) {
+        return 0;
+    }
+    return memcmp(slice.ptr, expected, expected_len) == 0;
+}
+
+static int asx_codec_slice_is_sha256_digest(asx_codec_slice digest)
+{
+    size_t i;
+
+    if (!asx_codec_slice_nonempty(digest) || digest.len != 71u) {
+        return 0;
+    }
+    if (memcmp(digest.ptr, "sha256:", 7u) != 0) {
+        return 0;
+    }
+    for (i = 7u; i < digest.len; i++) {
+        if (!asx_codec_is_lower_hex(digest.ptr[i])) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static uint32_t asx_codec_bin_checksum32(const unsigned char *bytes, size_t len)
+{
+    uint32_t hash;
+    size_t i;
+
+    hash = 2166136261u;
+    for (i = 0u; i < len; i++) {
+        hash ^= (uint32_t)bytes[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+static void asx_codec_bin_store_u32_be(unsigned char out[4], uint32_t value)
+{
+    out[0] = (unsigned char)((value >> 24) & 0xffu);
+    out[1] = (unsigned char)((value >> 16) & 0xffu);
+    out[2] = (unsigned char)((value >> 8) & 0xffu);
+    out[3] = (unsigned char)(value & 0xffu);
+}
+
+static uint32_t asx_codec_bin_load_u32_be(const unsigned char in[4])
+{
+    uint32_t v = 0u;
+    v |= ((uint32_t)in[0]) << 24;
+    v |= ((uint32_t)in[1]) << 16;
+    v |= ((uint32_t)in[2]) << 8;
+    v |= ((uint32_t)in[3]);
+    return v;
+}
+
+static asx_status asx_codec_bin_append_u8(asx_codec_buffer *buf, uint8_t value)
+{
+    char byte = (char)value;
+    return asx_codec_buffer_append_bytes(buf, &byte, 1u);
+}
+
+static asx_status asx_codec_bin_append_u32_be(asx_codec_buffer *buf, uint32_t value)
+{
+    char bytes[4];
+    bytes[0] = (char)((value >> 24) & 0xffu);
+    bytes[1] = (char)((value >> 16) & 0xffu);
+    bytes[2] = (char)((value >> 8) & 0xffu);
+    bytes[3] = (char)(value & 0xffu);
+    return asx_codec_buffer_append_bytes(buf, bytes, 4u);
+}
+
+static asx_status asx_codec_bin_decode_varint(const unsigned char **cursor,
+                                              const unsigned char *end,
+                                              uint64_t *out_value)
+{
+    uint64_t value;
+    uint32_t i;
+    const unsigned char *scan;
+
+    if (cursor == NULL || *cursor == NULL || end == NULL || out_value == NULL || *cursor > end) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    value = 0u;
+    scan = *cursor;
+    for (i = 0u; i < 10u; i++) {
+        unsigned char byte;
+
+        if (scan >= end) {
+            return ASX_E_INVALID_ARGUMENT;
+        }
+        byte = *scan++;
+        if (i == 9u && (byte & 0xfeu) != 0u) {
+            return ASX_E_INVALID_ARGUMENT;
+        }
+        value |= ((uint64_t)(byte & 0x7fu)) << (7u * i);
+        if ((byte & 0x80u) == 0u) {
+            *cursor = scan;
+            *out_value = value;
+            return ASX_OK;
+        }
+    }
+    return ASX_E_INVALID_ARGUMENT;
+}
+
+static asx_status asx_codec_bin_append_varint(asx_codec_buffer *buf, uint64_t value)
+{
+    char bytes[10];
+    size_t n;
+
+    if (buf == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    n = 0u;
+    do {
+        uint8_t byte = (uint8_t)(value & 0x7fu);
+        value >>= 7u;
+        if (value != 0u) {
+            byte |= 0x80u;
+        }
+        bytes[n++] = (char)byte;
+    } while (value != 0u);
+
+    return asx_codec_buffer_append_bytes(buf, bytes, n);
+}
+
+static asx_status asx_codec_bin_append_key(asx_codec_buffer *buf, uint32_t tag, uint8_t wire)
+{
+    uint64_t key;
+    key = ((uint64_t)tag << 2u) | (uint64_t)(wire & ASX_CODEC_BIN_WIRE_MASK);
+    return asx_codec_bin_append_varint(buf, key);
+}
+
+static asx_status asx_codec_bin_append_string_field(asx_codec_buffer *buf,
+                                                    uint32_t tag,
+                                                    const char *value)
+{
+    asx_status st;
+    size_t len;
+
+    if (buf == NULL || value == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    len = strlen(value);
+
+    st = asx_codec_bin_append_key(buf, tag, ASX_CODEC_BIN_WIRE_BYTES);
+    if (st != ASX_OK) {
+        return st;
+    }
+    st = asx_codec_bin_append_varint(buf, (uint64_t)len);
+    if (st != ASX_OK) {
+        return st;
+    }
+    return asx_codec_buffer_append_bytes(buf, value, len);
+}
+
+static asx_status asx_codec_bin_append_varint_field(asx_codec_buffer *buf,
+                                                    uint32_t tag,
+                                                    uint64_t value)
+{
+    asx_status st;
+
+    st = asx_codec_bin_append_key(buf, tag, ASX_CODEC_BIN_WIRE_VARINT);
+    if (st != ASX_OK) {
+        return st;
+    }
+    return asx_codec_bin_append_varint(buf, value);
+}
+
+static asx_status asx_codec_bin_parse_frame(const void *frame_payload,
+                                            size_t frame_len,
+                                            asx_codec_bin_frame_view *out_frame)
+{
+    const unsigned char *bytes;
+    uint32_t payload_len32;
+    size_t expected_len;
+
+    if (frame_payload == NULL || frame_len < ASX_CODEC_BIN_HEADER_SIZE || out_frame == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    bytes = (const unsigned char *)frame_payload;
+    if (memcmp(bytes, g_asx_codec_bin_magic, 4u) != 0) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    out_frame->frame_schema_version = bytes[4];
+    out_frame->message_type = bytes[5];
+    out_frame->flags = bytes[6];
+    if (out_frame->frame_schema_version != ASX_CODEC_BIN_FRAME_SCHEMA_VERSION_V1 ||
+        out_frame->message_type != ASX_CODEC_BIN_FRAME_MESSAGE_FIXTURE) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if ((out_frame->flags & (uint8_t)(~ASX_CODEC_BIN_FLAG_CHECKSUM_FOOTER)) != 0u) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    payload_len32 = asx_codec_bin_load_u32_be(bytes + 7);
+    /* Guard: only meaningful on 32-bit targets where size_t could overflow */
+#if SIZE_MAX <= UINT32_MAX
+    if ((size_t)payload_len32 > ((size_t)-1) - ASX_CODEC_BIN_HEADER_SIZE) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+#endif
+    expected_len = ASX_CODEC_BIN_HEADER_SIZE + (size_t)payload_len32;
+    if ((out_frame->flags & ASX_CODEC_BIN_FLAG_CHECKSUM_FOOTER) != 0u) {
+        if (expected_len > ((size_t)-1) - ASX_CODEC_BIN_CHECKSUM_SIZE) {
+            return ASX_E_INVALID_ARGUMENT;
+        }
+        expected_len += ASX_CODEC_BIN_CHECKSUM_SIZE;
+    }
+    if (expected_len != frame_len) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    if ((out_frame->flags & ASX_CODEC_BIN_FLAG_CHECKSUM_FOOTER) != 0u) {
+        uint32_t expected_checksum;
+        uint32_t observed_checksum;
+        expected_checksum = asx_codec_bin_load_u32_be(bytes + expected_len - ASX_CODEC_BIN_CHECKSUM_SIZE);
+        observed_checksum = asx_codec_bin_checksum32(bytes, expected_len - ASX_CODEC_BIN_CHECKSUM_SIZE);
+        if (expected_checksum != observed_checksum) {
+            return ASX_E_INVALID_ARGUMENT;
+        }
+    }
+
+    out_frame->payload = bytes + ASX_CODEC_BIN_HEADER_SIZE;
+    out_frame->payload_len = (size_t)payload_len32;
+    return ASX_OK;
+}
+
+void asx_codec_bin_fixture_view_init(asx_codec_bin_fixture_view *view)
+{
+    if (view == NULL) {
+        return;
+    }
+    memset(view, 0, sizeof(*view));
+}
+
+static asx_status asx_codec_bin_validate_view(const asx_codec_bin_fixture_view *view)
+{
+    if (view == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (view->frame_schema_version != ASX_CODEC_BIN_FRAME_SCHEMA_VERSION_V1 ||
+        view->message_type != ASX_CODEC_BIN_FRAME_MESSAGE_FIXTURE) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (view->codec != ASX_CODEC_KIND_JSON && view->codec != ASX_CODEC_KIND_BIN) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (!asx_codec_slice_nonempty(view->scenario_id) ||
+        !asx_codec_slice_nonempty(view->fixture_schema_version) ||
+        !asx_codec_slice_nonempty(view->scenario_dsl_version) ||
+        !asx_codec_slice_nonempty(view->profile) ||
+        !asx_codec_slice_nonempty(view->rust_baseline_commit) ||
+        !asx_codec_slice_nonempty(view->rust_toolchain_commit_hash) ||
+        !asx_codec_slice_nonempty(view->rust_toolchain_release) ||
+        !asx_codec_slice_nonempty(view->rust_toolchain_host) ||
+        !asx_codec_slice_nonempty(view->cargo_lock_sha256) ||
+        !asx_codec_slice_nonempty(view->capture_run_id)) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (!asx_codec_slice_json_prefix(view->input_json, '{') ||
+        !asx_codec_slice_contains(view->input_json, "\"ops\"")) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (!asx_codec_slice_json_prefix(view->expected_events_json, '[') ||
+        !asx_codec_slice_json_prefix(view->expected_final_snapshot_json, '{') ||
+        !asx_codec_slice_json_prefix(view->expected_error_codes_json, '[')) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (!asx_codec_slice_is_sha256_digest(view->semantic_digest)) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    return ASX_OK;
+}
+
+asx_status asx_codec_decode_fixture_bin_view(const void *payload,
+                                             size_t payload_len,
+                                             asx_codec_bin_fixture_view *out_view)
+{
+    asx_codec_bin_frame_view frame;
+    asx_codec_bin_fixture_view view;
+    const unsigned char *cursor;
+    const unsigned char *end;
+    uint32_t seen;
+    asx_status st;
+
+    enum {
+        ASX_BIN_SEEN_REQUIRED = (1u << 17) - 1u
+    };
+
+    if (out_view == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    st = asx_codec_bin_parse_frame(payload, payload_len, &frame);
+    if (st != ASX_OK) {
+        return st;
+    }
+
+    asx_codec_bin_fixture_view_init(&view);
+    view.frame_schema_version = frame.frame_schema_version;
+    view.message_type = frame.message_type;
+    view.flags = frame.flags;
+
+    cursor = frame.payload;
+    end = frame.payload + frame.payload_len;
+    seen = 0u;
+
+    while (cursor < end) {
+        uint64_t key;
+        uint32_t tag;
+        uint8_t wire;
+        uint32_t bit = 0u;
+
+        st = asx_codec_bin_decode_varint(&cursor, end, &key);
+        if (st != ASX_OK) {
+            return st;
+        }
+
+        tag = (uint32_t)(key >> 2u);
+        wire = (uint8_t)(key & ASX_CODEC_BIN_WIRE_MASK);
+        if (tag == 0u || tag > 63u) {
+            return ASX_E_INVALID_ARGUMENT;
+        }
+        if (tag <= 17u) {
+            bit = 1u << (tag - 1u);
+        }
+
+        if (wire == ASX_CODEC_BIN_WIRE_VARINT) {
+            uint64_t value;
+
+            st = asx_codec_bin_decode_varint(&cursor, end, &value);
+            if (st != ASX_OK) {
+                return st;
+            }
+
+            if (tag == ASX_CODEC_BIN_TAG_CODEC) {
+                if ((seen & bit) != 0u || value > (uint64_t)ASX_CODEC_KIND_BIN) {
+                    return ASX_E_INVALID_ARGUMENT;
+                }
+                view.codec = (asx_codec_kind)value;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_SEED) {
+                if ((seen & bit) != 0u) {
+                    return ASX_E_INVALID_ARGUMENT;
+                }
+                view.seed = value;
+                seen |= bit;
+            }
+            continue;
+        }
+
+        if (wire == ASX_CODEC_BIN_WIRE_BYTES) {
+            uint64_t raw_len;
+            size_t field_len;
+            asx_codec_slice slice;
+
+            st = asx_codec_bin_decode_varint(&cursor, end, &raw_len);
+            if (st != ASX_OK || raw_len > (uint64_t)(size_t)(end - cursor)) {
+                return ASX_E_INVALID_ARGUMENT;
+            }
+            field_len = (size_t)raw_len;
+            slice.ptr = (const char *)cursor;
+            slice.len = field_len;
+            cursor += field_len;
+
+            if (tag == ASX_CODEC_BIN_TAG_SCENARIO_ID) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.scenario_id = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_FIXTURE_SCHEMA_VERSION) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.fixture_schema_version = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_SCENARIO_DSL_VERSION) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.scenario_dsl_version = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_PROFILE) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.profile = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_INPUT_JSON) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.input_json = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_EXPECTED_EVENTS_JSON) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.expected_events_json = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_EXPECTED_FINAL_SNAPSHOT_JSON) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.expected_final_snapshot_json = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_EXPECTED_ERROR_CODES_JSON) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.expected_error_codes_json = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_SEMANTIC_DIGEST) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.semantic_digest = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_RUST_BASELINE_COMMIT) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.rust_baseline_commit = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_COMMIT_HASH) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.rust_toolchain_commit_hash = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_RELEASE) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.rust_toolchain_release = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_HOST) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.rust_toolchain_host = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_CARGO_LOCK_SHA256) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.cargo_lock_sha256 = slice;
+                seen |= bit;
+            } else if (tag == ASX_CODEC_BIN_TAG_CAPTURE_RUN_ID) {
+                if ((seen & bit) != 0u) return ASX_E_INVALID_ARGUMENT;
+                view.capture_run_id = slice;
+                seen |= bit;
+            }
+            continue;
+        }
+
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    if (seen != ASX_BIN_SEEN_REQUIRED) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    if (!asx_codec_slice_matches(view.fixture_schema_version, "fixture-v1")) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    st = asx_codec_bin_validate_view(&view);
+    if (st != ASX_OK) {
+        return st;
+    }
+
+    *out_view = view;
+    return ASX_OK;
+}
+
+static asx_status asx_codec_assign_dup_slice(char **out_text, asx_codec_slice slice)
+{
+    if (out_text == NULL || !asx_codec_slice_nonempty(slice)) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+    *out_text = asx_codec_strdup_range(slice.ptr, slice.len);
+    if (*out_text == NULL) {
+        return ASX_E_RESOURCE_EXHAUSTED;
+    }
+    return ASX_OK;
+}
+
+static asx_status asx_codec_fixture_from_bin_view(const asx_codec_bin_fixture_view *view,
+                                                  asx_canonical_fixture *out_fixture)
+{
+    asx_canonical_fixture parsed;
+    asx_status st;
+
+    if (view == NULL || out_fixture == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    asx_canonical_fixture_init(&parsed);
+    parsed.codec = view->codec;
+    parsed.seed = view->seed;
+
+    st = asx_codec_assign_dup_slice(&parsed.scenario_id, view->scenario_id);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.fixture_schema_version, view->fixture_schema_version);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.scenario_dsl_version, view->scenario_dsl_version);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.profile, view->profile);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.input_json, view->input_json);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.expected_events_json, view->expected_events_json);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.expected_final_snapshot_json, view->expected_final_snapshot_json);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.expected_error_codes_json, view->expected_error_codes_json);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.semantic_digest, view->semantic_digest);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.provenance.rust_baseline_commit, view->rust_baseline_commit);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.provenance.rust_toolchain_commit_hash,
+                                    view->rust_toolchain_commit_hash);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.provenance.rust_toolchain_release, view->rust_toolchain_release);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.provenance.rust_toolchain_host, view->rust_toolchain_host);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.provenance.cargo_lock_sha256, view->cargo_lock_sha256);
+    if (st != ASX_OK) goto fail;
+    st = asx_codec_assign_dup_slice(&parsed.provenance.capture_run_id, view->capture_run_id);
+    if (st != ASX_OK) goto fail;
+
+    st = asx_canonical_fixture_validate(&parsed);
+    if (st != ASX_OK) {
+        goto fail;
+    }
+
+    *out_fixture = parsed;
+    return ASX_OK;
+
+fail:
+    asx_canonical_fixture_reset(&parsed);
+    return st;
+}
+
+static asx_status asx_codec_encode_fixture_bin(const asx_canonical_fixture *fixture,
+                                               asx_codec_buffer *out_payload)
+{
+    asx_status st;
+    size_t payload_start;
+    size_t payload_len;
+    uint32_t checksum;
+    unsigned char checksum_bytes[4];
+
+    if (fixture == NULL || out_payload == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    st = asx_canonical_fixture_validate(fixture);
+    if (st != ASX_OK) {
+        return st;
+    }
+    if (strcmp(fixture->fixture_schema_version, "fixture-v1") != 0) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    out_payload->len = 0u;
+    if (out_payload->data != NULL) {
+        out_payload->data[0] = '\0';
+    }
+
+    st = asx_codec_buffer_append_bytes(out_payload, (const char *)g_asx_codec_bin_magic, 4u);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_u8(out_payload, ASX_CODEC_BIN_FRAME_SCHEMA_VERSION_V1);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_u8(out_payload, ASX_CODEC_BIN_FRAME_MESSAGE_FIXTURE);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_u8(out_payload, ASX_CODEC_BIN_FLAG_CHECKSUM_FOOTER);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_u32_be(out_payload, 0u);
+    if (st != ASX_OK) return st;
+
+    payload_start = out_payload->len;
+
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_SCENARIO_ID, fixture->scenario_id);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_FIXTURE_SCHEMA_VERSION,
+                                           fixture->fixture_schema_version);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_SCENARIO_DSL_VERSION,
+                                           fixture->scenario_dsl_version);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_PROFILE, fixture->profile);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_varint_field(out_payload, ASX_CODEC_BIN_TAG_CODEC, (uint64_t)fixture->codec);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_varint_field(out_payload, ASX_CODEC_BIN_TAG_SEED, fixture->seed);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_INPUT_JSON, fixture->input_json);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_EXPECTED_EVENTS_JSON,
+                                           fixture->expected_events_json);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_EXPECTED_FINAL_SNAPSHOT_JSON,
+                                           fixture->expected_final_snapshot_json);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_EXPECTED_ERROR_CODES_JSON,
+                                           fixture->expected_error_codes_json);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_SEMANTIC_DIGEST,
+                                           fixture->semantic_digest);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_RUST_BASELINE_COMMIT,
+                                           fixture->provenance.rust_baseline_commit);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_COMMIT_HASH,
+                                           fixture->provenance.rust_toolchain_commit_hash);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_RELEASE,
+                                           fixture->provenance.rust_toolchain_release);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_RUST_TOOLCHAIN_HOST,
+                                           fixture->provenance.rust_toolchain_host);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_CARGO_LOCK_SHA256,
+                                           fixture->provenance.cargo_lock_sha256);
+    if (st != ASX_OK) return st;
+    st = asx_codec_bin_append_string_field(out_payload, ASX_CODEC_BIN_TAG_CAPTURE_RUN_ID,
+                                           fixture->provenance.capture_run_id);
+    if (st != ASX_OK) return st;
+
+    payload_len = out_payload->len - payload_start;
+    if (payload_len > 0xffffffffu) {
+        return ASX_E_RESOURCE_EXHAUSTED;
+    }
+    asx_codec_bin_store_u32_be((unsigned char *)(out_payload->data + 7), (uint32_t)payload_len);
+
+    checksum = asx_codec_bin_checksum32((const unsigned char *)out_payload->data, out_payload->len);
+    asx_codec_bin_store_u32_be(checksum_bytes, checksum);
+    st = asx_codec_buffer_append_bytes(out_payload, (const char *)checksum_bytes, sizeof(checksum_bytes));
+    if (st != ASX_OK) {
+        return st;
+    }
+
+    return ASX_OK;
+}
+
+static asx_status asx_codec_decode_fixture_bin(const void *payload,
+                                               size_t payload_len,
+                                               asx_canonical_fixture *out_fixture)
+{
+    asx_codec_bin_fixture_view view;
+    asx_status st;
+
+    if (out_fixture == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    asx_codec_bin_fixture_view_init(&view);
+    st = asx_codec_decode_fixture_bin_view(payload, payload_len, &view);
+    if (st != ASX_OK) {
+        return st;
+    }
+    return asx_codec_fixture_from_bin_view(&view, out_fixture);
 }
 
 static const asx_codec_vtable g_asx_codec_json_vtable = {
     ASX_CODEC_KIND_JSON,
     asx_codec_encode_fixture_json,
-    asx_codec_decode_fixture_json
+    asx_codec_decode_fixture_json_payload
 };
 
 static const asx_codec_vtable g_asx_codec_bin_vtable = {
     ASX_CODEC_KIND_BIN,
-    asx_codec_encode_bin_unsupported,
-    asx_codec_decode_bin_unsupported
+    asx_codec_encode_fixture_bin,
+    asx_codec_decode_fixture_bin
 };
 
 const asx_codec_vtable *asx_codec_vtable_for(asx_codec_kind codec)
@@ -1516,7 +2379,8 @@ asx_status asx_codec_encode_fixture(asx_codec_kind codec,
 }
 
 asx_status asx_codec_decode_fixture(asx_codec_kind codec,
-                                    const char *payload,
+                                    const void *payload,
+                                    size_t payload_len,
                                     asx_canonical_fixture *out_fixture)
 {
     const asx_codec_vtable *vt;
@@ -1525,5 +2389,236 @@ asx_status asx_codec_decode_fixture(asx_codec_kind codec,
     if (vt == NULL || vt->decode_fixture == NULL) {
         return ASX_E_INVALID_ARGUMENT;
     }
-    return vt->decode_fixture(payload, out_fixture);
+    return vt->decode_fixture(payload, payload_len, out_fixture);
+}
+
+/* ------------------------------------------------------------------ */
+/* Cross-codec semantic equivalence (bd-2n0.3)                         */
+/* ------------------------------------------------------------------ */
+
+void asx_codec_equiv_report_init(asx_codec_equiv_report *report)
+{
+    if (report == NULL) return;
+    memset(report, 0, sizeof(*report));
+}
+
+static void asx_equiv_report_add_diff(asx_codec_equiv_report *report,
+                                      const char *field_name)
+{
+    size_t len;
+
+    if (report == NULL) return;
+    if (report->count >= ASX_EQUIV_MAX_DIFFS) return;
+
+    len = strlen(field_name);
+    if (len >= ASX_EQUIV_MAX_FIELD_NAME) {
+        len = ASX_EQUIV_MAX_FIELD_NAME - 1u;
+    }
+    memcpy(report->diffs[report->count].field_name, field_name, len);
+    report->diffs[report->count].field_name[len] = '\0';
+    report->count++;
+}
+
+static int asx_equiv_str_eq(const char *a, const char *b)
+{
+    if (a == NULL && b == NULL) return 1;
+    if (a == NULL || b == NULL) return 0;
+    return strcmp(a, b) == 0;
+}
+
+asx_status asx_codec_fixture_semantic_eq(const asx_canonical_fixture *a,
+                                         const asx_canonical_fixture *b,
+                                         asx_codec_equiv_report *report)
+{
+    int mismatch = 0;
+
+    if (a == NULL || b == NULL) return ASX_E_INVALID_ARGUMENT;
+
+    if (report != NULL) {
+        asx_codec_equiv_report_init(report);
+    }
+
+    /* Compare all semantic fields — codec is explicitly excluded */
+
+    if (!asx_equiv_str_eq(a->scenario_id, b->scenario_id)) {
+        asx_equiv_report_add_diff(report, "scenario_id");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->fixture_schema_version, b->fixture_schema_version)) {
+        asx_equiv_report_add_diff(report, "fixture_schema_version");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->scenario_dsl_version, b->scenario_dsl_version)) {
+        asx_equiv_report_add_diff(report, "scenario_dsl_version");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->profile, b->profile)) {
+        asx_equiv_report_add_diff(report, "profile");
+        mismatch = 1;
+    }
+    if (a->seed != b->seed) {
+        asx_equiv_report_add_diff(report, "seed");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->input_json, b->input_json)) {
+        asx_equiv_report_add_diff(report, "input_json");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->expected_events_json, b->expected_events_json)) {
+        asx_equiv_report_add_diff(report, "expected_events_json");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->expected_final_snapshot_json,
+                          b->expected_final_snapshot_json)) {
+        asx_equiv_report_add_diff(report, "expected_final_snapshot_json");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->expected_error_codes_json,
+                          b->expected_error_codes_json)) {
+        asx_equiv_report_add_diff(report, "expected_error_codes_json");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->semantic_digest, b->semantic_digest)) {
+        asx_equiv_report_add_diff(report, "semantic_digest");
+        mismatch = 1;
+    }
+
+    /* Provenance fields */
+    if (!asx_equiv_str_eq(a->provenance.rust_baseline_commit,
+                          b->provenance.rust_baseline_commit)) {
+        asx_equiv_report_add_diff(report, "provenance.rust_baseline_commit");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->provenance.rust_toolchain_commit_hash,
+                          b->provenance.rust_toolchain_commit_hash)) {
+        asx_equiv_report_add_diff(report, "provenance.rust_toolchain_commit_hash");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->provenance.rust_toolchain_release,
+                          b->provenance.rust_toolchain_release)) {
+        asx_equiv_report_add_diff(report, "provenance.rust_toolchain_release");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->provenance.rust_toolchain_host,
+                          b->provenance.rust_toolchain_host)) {
+        asx_equiv_report_add_diff(report, "provenance.rust_toolchain_host");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->provenance.cargo_lock_sha256,
+                          b->provenance.cargo_lock_sha256)) {
+        asx_equiv_report_add_diff(report, "provenance.cargo_lock_sha256");
+        mismatch = 1;
+    }
+    if (!asx_equiv_str_eq(a->provenance.capture_run_id,
+                          b->provenance.capture_run_id)) {
+        asx_equiv_report_add_diff(report, "provenance.capture_run_id");
+        mismatch = 1;
+    }
+
+    return mismatch ? ASX_E_EQUIVALENCE_MISMATCH : ASX_OK;
+}
+
+asx_status asx_codec_fixture_semantic_key(const asx_canonical_fixture *fixture,
+                                          asx_codec_buffer *out_key)
+{
+    asx_status st;
+    int is_first = 1;
+
+    if (fixture == NULL || out_key == NULL) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    st = asx_canonical_fixture_validate(fixture);
+    if (st != ASX_OK) {
+        return st;
+    }
+
+    out_key->len = 0u;
+    if (out_key->data != NULL) {
+        out_key->data[0] = '\0';
+    }
+
+    st = asx_codec_buffer_append_char(out_key, '{');
+    if (st != ASX_OK) return st;
+
+    /* Alphabetical field order, codec excluded */
+    st = asx_codec_buffer_append_string_field(out_key, &is_first,
+                                              "profile", fixture->profile);
+    if (st != ASX_OK) return st;
+
+    st = asx_codec_buffer_append_string_field(out_key, &is_first,
+                                              "scenario_id",
+                                              fixture->scenario_id);
+    if (st != ASX_OK) return st;
+
+    st = asx_codec_buffer_append_u64_field(out_key, &is_first,
+                                           "seed", fixture->seed);
+    if (st != ASX_OK) return st;
+
+    st = asx_codec_buffer_append_string_field(out_key, &is_first,
+                                              "semantic_digest",
+                                              fixture->semantic_digest);
+    if (st != ASX_OK) return st;
+
+    return asx_codec_buffer_append_char(out_key, '}');
+}
+
+asx_status asx_codec_cross_codec_verify(const asx_canonical_fixture *fixture,
+                                        asx_codec_equiv_report *report)
+{
+    asx_canonical_fixture from_json;
+    asx_canonical_fixture from_bin;
+    asx_codec_buffer json_buf;
+    asx_codec_buffer bin_buf;
+    asx_status st;
+    asx_status result;
+
+    if (fixture == NULL) return ASX_E_INVALID_ARGUMENT;
+
+    asx_canonical_fixture_init(&from_json);
+    asx_canonical_fixture_init(&from_bin);
+    asx_codec_buffer_init(&json_buf);
+    asx_codec_buffer_init(&bin_buf);
+
+    /* Encode as JSON */
+    st = asx_codec_encode_fixture(ASX_CODEC_KIND_JSON, fixture, &json_buf);
+    if (st != ASX_OK) {
+        result = st;
+        goto cleanup;
+    }
+
+    /* Encode as BIN */
+    st = asx_codec_encode_fixture(ASX_CODEC_KIND_BIN, fixture, &bin_buf);
+    if (st != ASX_OK) {
+        result = st;
+        goto cleanup;
+    }
+
+    /* Decode JSON */
+    st = asx_codec_decode_fixture(ASX_CODEC_KIND_JSON,
+                                  json_buf.data, json_buf.len,
+                                  &from_json);
+    if (st != ASX_OK) {
+        result = st;
+        goto cleanup;
+    }
+
+    /* Decode BIN */
+    st = asx_codec_decode_fixture(ASX_CODEC_KIND_BIN,
+                                  bin_buf.data, bin_buf.len,
+                                  &from_bin);
+    if (st != ASX_OK) {
+        result = st;
+        goto cleanup;
+    }
+
+    /* Compare decoded fixtures for semantic equivalence */
+    result = asx_codec_fixture_semantic_eq(&from_json, &from_bin, report);
+
+cleanup:
+    asx_codec_buffer_reset(&bin_buf);
+    asx_codec_buffer_reset(&json_buf);
+    asx_canonical_fixture_reset(&from_bin);
+    asx_canonical_fixture_reset(&from_json);
+    return result;
 }
