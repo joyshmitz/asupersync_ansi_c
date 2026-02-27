@@ -106,6 +106,13 @@ ASX_API ASX_MUST_USE asx_status asx_region_poison(asx_region_id id);
 ASX_API ASX_MUST_USE asx_status asx_region_is_poisoned(asx_region_id id,
                                                         int *out);
 
+/* Apply the active containment policy to a region after a fault.
+ * In FAIL_FAST mode: returns the fault status (caller should abort).
+ * In POISON_REGION mode: poisons the region and returns the fault.
+ * In ERROR_ONLY mode: returns the fault status without side effects. */
+ASX_API ASX_MUST_USE asx_status asx_region_contain_fault(
+    asx_region_id id, asx_status fault);
+
 /* -------------------------------------------------------------------
  * Task lifecycle
  * ------------------------------------------------------------------- */
@@ -134,6 +141,48 @@ ASX_API ASX_MUST_USE asx_status asx_task_get_state(asx_task_id id,
 /* Query the outcome of a completed task. */
 ASX_API ASX_MUST_USE asx_status asx_task_get_outcome(asx_task_id id,
                                                      asx_outcome *out_outcome);
+
+/* -------------------------------------------------------------------
+ * Cancellation (bd-2cw.3)
+ *
+ * Tasks can be cancelled through explicit request or propagation
+ * from parent regions. Cancellation follows a strict phase protocol:
+ *   Running → CancelRequested → Cancelling → Finalizing → Completed
+ *
+ * The checkpoint API allows tasks to observe and acknowledge
+ * cancellation, applying cleanup budgets for bounded completion.
+ * ------------------------------------------------------------------- */
+
+/* Result from asx_checkpoint(): tells the task its cancel status. */
+typedef struct {
+    asx_cancel_phase  phase;           /* current phase (or 0 if not cancelled) */
+    int               cancelled;       /* nonzero if cancel is active */
+    uint32_t          polls_remaining; /* cleanup budget left */
+    asx_cancel_kind   kind;            /* cancel kind (if cancelled) */
+} asx_checkpoint_result;
+
+/* Request cancellation of a task. Transitions Running → CancelRequested.
+ * No-op if already in cancel or terminal state. */
+ASX_API ASX_MUST_USE asx_status asx_task_cancel(asx_task_id id,
+                                                 asx_cancel_kind kind);
+
+/* Propagate cancellation to all tasks in a region.
+ * Returns the number of tasks that received the cancel signal. */
+ASX_API uint32_t asx_cancel_propagate(asx_region_id region,
+                                       asx_cancel_kind kind);
+
+/* Task checkpoint: observe cancel status and advance phase.
+ * If in CancelRequested, transitions to Cancelling and applies
+ * cleanup budget. Returns cancel status in *out. */
+ASX_API ASX_MUST_USE asx_status asx_checkpoint(asx_task_id self,
+                                                asx_checkpoint_result *out);
+
+/* Advance from Cancelling → Finalizing. Call when cleanup is done. */
+ASX_API ASX_MUST_USE asx_status asx_task_finalize(asx_task_id id);
+
+/* Query the cancel phase of a task. */
+ASX_API ASX_MUST_USE asx_status asx_task_get_cancel_phase(asx_task_id id,
+                                                           asx_cancel_phase *out);
 
 /* -------------------------------------------------------------------
  * Obligation lifecycle
