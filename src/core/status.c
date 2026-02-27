@@ -43,6 +43,10 @@ const char *asx_status_str(asx_status s) {
     case ASX_E_INCOMPLETE_CHILDREN:       return "incomplete children";
     case ASX_E_RESOURCE_EXHAUSTED:        return "resource exhausted";
     case ASX_E_STALE_HANDLE:              return "stale handle";
+    case ASX_E_HOOK_MISSING:              return "required runtime hook missing";
+    case ASX_E_HOOK_INVALID:              return "runtime hook contract invalid";
+    case ASX_E_DETERMINISM_VIOLATION:     return "deterministic mode hook violation";
+    case ASX_E_ALLOCATOR_SEALED:          return "allocator is sealed";
     default:                              return "unknown status";
     }
 }

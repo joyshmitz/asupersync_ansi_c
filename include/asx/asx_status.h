@@ -71,7 +71,13 @@ typedef enum {
     ASX_E_RESOURCE_EXHAUSTED   = 1000,
 
     /* Handle errors (11xx) */
-    ASX_E_STALE_HANDLE         = 1100
+    ASX_E_STALE_HANDLE         = 1100,
+
+    /* Hook/runtime contract errors (12xx) */
+    ASX_E_HOOK_MISSING         = 1200,
+    ASX_E_HOOK_INVALID         = 1201,
+    ASX_E_DETERMINISM_VIOLATION = 1202,
+    ASX_E_ALLOCATOR_SEALED     = 1203
 
 } asx_status;
 
