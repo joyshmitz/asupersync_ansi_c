@@ -16,6 +16,16 @@
 #include <asx/core/transition.h>
 #include "runtime_internal.h"
 
+static void asx_task_release_capture(asx_task_slot *task)
+{
+    if (task->captured_dtor != NULL && task->captured_state != NULL) {
+        task->captured_dtor(task->captured_state, task->captured_size);
+    }
+    task->captured_dtor = NULL;
+    task->captured_state = NULL;
+    task->captured_size = 0;
+}
+
 /* -------------------------------------------------------------------
  * Scheduler: run all tasks in a region until completion or budget
  * ------------------------------------------------------------------- */
@@ -77,11 +87,13 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 /* Task completed successfully */
                 t->state = ASX_TASK_COMPLETED;
                 t->outcome = asx_outcome_make(ASX_OUTCOME_OK);
+                asx_task_release_capture(t);
                 rslot->task_count--;
             } else if (poll_result != ASX_E_PENDING) {
                 /* Task failed — mark as completed with error */
                 t->state = ASX_TASK_COMPLETED;
                 t->outcome = asx_outcome_make(ASX_OUTCOME_ERR);
+                asx_task_release_capture(t);
                 rslot->task_count--;
             }
             /* ASX_E_PENDING: task not ready, continue polling next task */

@@ -30,6 +30,7 @@ extern "C" {
 #define ASX_MAX_REGIONS      8
 #define ASX_MAX_TASKS        64
 #define ASX_MAX_OBLIGATIONS  128
+#define ASX_REGION_CAPTURE_ARENA_BYTES 16384u
 
 /* -------------------------------------------------------------------
  * Task poll function signature
@@ -41,6 +42,36 @@ extern "C" {
  * ------------------------------------------------------------------- */
 
 typedef asx_status (*asx_task_poll_fn)(void *user_data, asx_task_id self);
+
+/* Optional destructor for region-owned captured task state. */
+typedef void (*asx_task_state_dtor_fn)(void *state, uint32_t state_size);
+
+/* Coroutine resume token embedded in captured task state structs. */
+typedef struct asx_co_state {
+    uint32_t line;
+} asx_co_state;
+
+#define ASX_CO_STATE_INIT { 0u }
+
+/* Protothread helpers:
+ *  - ASX_CO_BEGIN must be paired with ASX_CO_END in the same function.
+ *  - ASX_CO_YIELD returns ASX_E_PENDING and resumes at the next call.
+ *  - State must live in region-owned captured task memory. */
+#define ASX_CO_BEGIN(CO_STATE_PTR)                 \
+    switch ((CO_STATE_PTR)->line) {                \
+    case 0u:
+
+#define ASX_CO_YIELD(CO_STATE_PTR)                 \
+    do {                                           \
+        (CO_STATE_PTR)->line = (uint32_t)__LINE__; \
+        return ASX_E_PENDING;                      \
+        case __LINE__:;                            \
+    } while (0)
+
+#define ASX_CO_END(CO_STATE_PTR)                   \
+    }                                              \
+    (CO_STATE_PTR)->line = 0u;                     \
+    return ASX_OK
 
 /* -------------------------------------------------------------------
  * Region lifecycle
@@ -66,6 +97,16 @@ ASX_API ASX_MUST_USE asx_status asx_task_spawn(asx_region_id region,
                                                asx_task_poll_fn poll_fn,
                                                void *user_data,
                                                asx_task_id *out_id);
+
+/* Spawn a task with captured state allocated from the region arena.
+ * The returned state pointer is stable for the task lifetime and is
+ * automatically passed as user_data to poll_fn. */
+ASX_API ASX_MUST_USE asx_status asx_task_spawn_captured(asx_region_id region,
+                                                        asx_task_poll_fn poll_fn,
+                                                        uint32_t state_size,
+                                                        asx_task_state_dtor_fn state_dtor,
+                                                        asx_task_id *out_id,
+                                                        void **out_state);
 
 /* Query the current state of a task. */
 ASX_API ASX_MUST_USE asx_status asx_task_get_state(asx_task_id id,

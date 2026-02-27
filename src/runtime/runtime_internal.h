@@ -27,6 +27,8 @@ typedef struct {
     uint16_t           generation;     /* increments on slot reclaim */
     int                alive;          /* 1 if slot in use */
     asx_cleanup_stack  cleanup;        /* LIFO cleanup for finalization */
+    uint8_t            capture_arena[ASX_REGION_CAPTURE_ARENA_BYTES];
+    uint32_t           capture_used;
 } asx_region_slot;
 
 typedef struct {
@@ -37,6 +39,9 @@ typedef struct {
     asx_outcome      outcome;
     uint16_t         generation;     /* increments on slot reclaim */
     int              alive;
+    void            *captured_state;
+    uint32_t         captured_size;
+    asx_task_state_dtor_fn captured_dtor;
 } asx_task_slot;
 
 typedef struct {
@@ -63,9 +68,9 @@ extern uint32_t             g_obligation_count;
  * Shared lookup functions (generation-safe, used across TUs)
  * ------------------------------------------------------------------- */
 
-asx_status asx_region_slot_lookup(asx_region_id id, asx_region_slot **out);
-asx_status asx_task_slot_lookup(asx_task_id id, asx_task_slot **out);
-asx_status asx_obligation_slot_lookup(asx_obligation_id id,
-                                       asx_obligation_slot **out);
+ASX_MUST_USE asx_status asx_region_slot_lookup(asx_region_id id, asx_region_slot **out);
+ASX_MUST_USE asx_status asx_task_slot_lookup(asx_task_id id, asx_task_slot **out);
+ASX_MUST_USE asx_status asx_obligation_slot_lookup(asx_obligation_id id,
+                                                   asx_obligation_slot **out);
 
 #endif /* ASX_RUNTIME_INTERNAL_H */
