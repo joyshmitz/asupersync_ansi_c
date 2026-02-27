@@ -27,6 +27,26 @@ Environment:
 EOF
 }
 
+sanitize_name() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr -cs 'A-Za-z0-9._-' '_')"
+  value="${value#_}"
+  value="${value%_}"
+  if [[ -z "$value" ]]; then
+    value="record"
+  fi
+  printf '%s\n' "$value"
+}
+
+hash_hex() {
+  local payload="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$payload" | sha256sum | awk '{print $1}'
+  else
+    printf '%s' "$payload" | shasum -a 256 | awk '{print $1}'
+  fi
+}
+
 MODE="conformance"
 FIXTURES_ROOT="${FIXTURES_ROOT:-$REPO_ROOT/fixtures/rust_reference}"
 REPORT_DIR="${REPORT_DIR:-$REPO_ROOT/tools/ci/artifacts/conformance}"
@@ -93,12 +113,19 @@ mkdir -p "$REPORT_DIR"
 REPORT_FILE="$REPORT_DIR/${RUN_ID}-${MODE}.jsonl"
 SUMMARY_FILE="$REPORT_DIR/${RUN_ID}-${MODE}.summary.json"
 NORMALIZED_FILE="$REPORT_DIR/${RUN_ID}-${MODE}.normalized.jsonl"
+DIFF_FILE="$REPORT_DIR/${RUN_ID}-${MODE}.diffs.jsonl"
 BUILD_LOG="$REPORT_DIR/${RUN_ID}-${MODE}.build.log"
 SMOKE_BUILD_LOG="$REPORT_DIR/${RUN_ID}-${MODE}.smoke-build.log"
 SMOKE_RUN_LOG="$REPORT_DIR/${RUN_ID}-${MODE}.smoke-run.log"
+RUNNER_BUILD_LOG="$REPORT_DIR/${RUN_ID}-${MODE}.fixture-runner-build.log"
+RUNNER_RUN_LOG_DIR="$REPORT_DIR/${RUN_ID}-${MODE}.fixture-runner-logs"
+DIFF_DIR="$REPORT_DIR/${RUN_ID}-${MODE}-diffs"
 
 : >"$REPORT_FILE"
 : >"$NORMALIZED_FILE"
+mkdir -p "$RUNNER_RUN_LOG_DIR"
+mkdir -p "$DIFF_DIR"
+: >"$DIFF_FILE"
 
 if ! command -v jq >/dev/null 2>&1; then
   msg="jq is required to parse canonical fixture metadata"
@@ -138,6 +165,8 @@ if [[ -z "$baseline_commit" || -z "$baseline_toolchain_hash" || -z "$baseline_ca
   echo "[asx] conformance: FAIL (baseline inventory missing required provenance fields)" >&2
   exit 1
 fi
+
+fixture_runner_bin=""
 
 echo "[asx] conformance[$MODE]: build + smoke gate..." >&2
 if ! make -C "$REPO_ROOT" build >"$BUILD_LOG" 2>&1; then
@@ -198,6 +227,145 @@ else
   fi
 fi
 
+if [[ -f "$REPO_ROOT/build/lib/libasx.a" ]]; then
+  fixture_runner_src="$REPORT_DIR/${RUN_ID}-${MODE}.fixture_runner.c"
+  fixture_runner_bin="$REPORT_DIR/${RUN_ID}-${MODE}.fixture_runner"
+
+  cat >"$fixture_runner_src" <<'EOF'
+#include <asx/asx.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char *read_file_all(const char *path, size_t *out_len)
+{
+    FILE *fp = fopen(path, "rb");
+    long size;
+    char *buf;
+    if (fp == NULL) {
+        return NULL;
+    }
+    if (fseek(fp, 0L, SEEK_END) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    size = ftell(fp);
+    if (size < 0) {
+        fclose(fp);
+        return NULL;
+    }
+    if (fseek(fp, 0L, SEEK_SET) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    buf = (char *)malloc((size_t)size + 1u);
+    if (buf == NULL) {
+        fclose(fp);
+        return NULL;
+    }
+    if (fread(buf, 1u, (size_t)size, fp) != (size_t)size) {
+        free(buf);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+    buf[size] = '\0';
+    if (out_len != NULL) {
+        *out_len = (size_t)size;
+    }
+    return buf;
+}
+
+int main(int argc, char **argv)
+{
+    asx_canonical_fixture fixture;
+    asx_codec_buffer replay_key;
+    asx_codec_equiv_report report;
+    asx_status st;
+    char *payload;
+    size_t payload_len = 0u;
+
+    if (argc != 2) {
+        fprintf(stderr, "usage: fixture_runner <fixture.json>\n");
+        return 64;
+    }
+
+    payload = read_file_all(argv[1], &payload_len);
+    if (payload == NULL) {
+        fprintf(stderr, "failed to read fixture: %s\n", argv[1]);
+        return 65;
+    }
+
+    asx_canonical_fixture_init(&fixture);
+    asx_codec_buffer_init(&replay_key);
+    asx_codec_equiv_report_init(&report);
+
+    st = asx_codec_decode_fixture(ASX_CODEC_KIND_JSON, payload, payload_len, &fixture);
+    if (st != ASX_OK) {
+        fprintf(stderr, "decode_failed:%s\n", asx_status_str(st));
+        free(payload);
+        asx_codec_buffer_reset(&replay_key);
+        asx_canonical_fixture_reset(&fixture);
+        return 2;
+    }
+
+    st = asx_codec_fixture_replay_key(&fixture, &replay_key);
+    if (st != ASX_OK) {
+        fprintf(stderr, "replay_key_failed:%s\n", asx_status_str(st));
+        free(payload);
+        asx_codec_buffer_reset(&replay_key);
+        asx_canonical_fixture_reset(&fixture);
+        return 3;
+    }
+
+    st = asx_codec_cross_codec_verify(&fixture, &report);
+    if (st != ASX_OK) {
+        if (st == ASX_E_EQUIVALENCE_MISMATCH) {
+            const char *field = (report.count > 0u) ? report.diffs[0].field_name : "";
+            fprintf(stderr, "equivalence_mismatch:first_field=%s count=%u\n", field, (unsigned)report.count);
+            free(payload);
+            asx_codec_buffer_reset(&replay_key);
+            asx_canonical_fixture_reset(&fixture);
+            return 4;
+        }
+        fprintf(stderr, "cross_codec_failed:%s\n", asx_status_str(st));
+        free(payload);
+        asx_codec_buffer_reset(&replay_key);
+        asx_canonical_fixture_reset(&fixture);
+        return 5;
+    }
+
+    printf("ok\tscenario=%s\treplay_key=%s\n",
+           fixture.scenario_id != NULL ? fixture.scenario_id : "",
+           replay_key.data != NULL ? replay_key.data : "");
+
+    free(payload);
+    asx_codec_buffer_reset(&replay_key);
+    asx_canonical_fixture_reset(&fixture);
+    return 0;
+}
+EOF
+
+  set +e
+  "$cc_bin" "${cflags_arr[@]}" \
+    -I"$REPO_ROOT/include" \
+    -o "$fixture_runner_bin" \
+    "$fixture_runner_src" \
+    "$REPO_ROOT/build/lib/libasx.a" >"$RUNNER_BUILD_LOG" 2>&1
+  runner_build_rc=$?
+  set -e
+
+  if [[ "$runner_build_rc" -ne 0 ]]; then
+    fixture_runner_bin=""
+    jq -n -c \
+      --arg run_id "$RUN_ID" \
+      --arg mode "$MODE" \
+      --arg log "$RUNNER_BUILD_LOG" \
+      '{kind:"fixture_replay_runner",run_id:$run_id,mode:$mode,status:"fail",parity:"fail",delta_classification:"harness_defect",diagnostic:("failed to compile fixture runner; inspect " + $log)}' \
+      >>"$REPORT_FILE"
+  fi
+fi
+
 declare -a fixture_files
 if [[ -d "$FIXTURES_ROOT" ]]; then
   mapfile -t fixture_files < <(
@@ -219,7 +387,7 @@ if [[ "${#fixture_files[@]}" -eq 0 ]]; then
 else
   for fixture in "${fixture_files[@]}"; do
     rel_fixture="${fixture#$REPO_ROOT/}"
-    jq -c \
+    record="$(jq -c \
       --arg run_id "$RUN_ID" \
       --arg mode "$MODE" \
       --arg file "$rel_fixture" \
@@ -270,7 +438,57 @@ else
       | .diagnostic = (if (.diagnostics | length) > 0 then (.diagnostics | join("; ")) else "fixture metadata/provenance valid" end)
       | del(.diagnostics)
       ' \
-      "$fixture" | tee -a "$REPORT_FILE" >>"$NORMALIZED_FILE"
+      "$fixture")"
+
+    echo "$record" >>"$REPORT_FILE"
+    echo "$record" >>"$NORMALIZED_FILE"
+
+    scenario_id="$(jq -r '.scenario_id // ""' <<<"$record")"
+    codec_value="$(jq -r '.codec // ""' <<<"$record")"
+    profile_value="$(jq -r '.profile // ""' <<<"$record")"
+    if [[ -z "$scenario_id" ]]; then
+      scenario_id="$(basename "$rel_fixture" .json)"
+    fi
+
+    if [[ -n "$fixture_runner_bin" && -x "$fixture_runner_bin" ]]; then
+      safe_name="$(sanitize_name "${scenario_id}_${codec_value}_${profile_value}")"
+      runner_log="$RUNNER_RUN_LOG_DIR/${safe_name}.log"
+      set +e
+      "$fixture_runner_bin" "$fixture" >"$runner_log" 2>&1
+      runner_rc=$?
+      set -e
+
+      runner_diag="$(tr '\n' ' ' <"$runner_log" | sed -e 's/[[:space:]]\+/ /g' -e 's/^ //;s/ $//')"
+      if [[ -z "$runner_diag" ]]; then
+        runner_diag="fixture replay helper completed"
+      fi
+
+      replay_status="fail"
+      replay_parity="fail"
+      replay_delta="harness_defect"
+      if [[ "$runner_rc" -eq 0 ]]; then
+        replay_status="pass"
+        replay_parity="pass"
+        replay_delta="none"
+      elif [[ "$runner_rc" -eq 4 ]]; then
+        replay_delta="c_regression"
+      fi
+
+      jq -n -c \
+        --arg run_id "$RUN_ID" \
+        --arg mode "$MODE" \
+        --arg file "$rel_fixture" \
+        --arg scenario_id "$scenario_id" \
+        --arg codec "$codec_value" \
+        --arg profile "$profile_value" \
+        --arg status "$replay_status" \
+        --arg parity "$replay_parity" \
+        --arg delta "$replay_delta" \
+        --arg diagnostic "$runner_diag" \
+        --argjson exit_code "$runner_rc" \
+        '{kind:"fixture_replay",run_id:$run_id,mode:$mode,file:$file,scenario_id:$scenario_id,codec:$codec,profile:$profile,status:$status,parity:$parity,delta_classification:$delta,exit_code:$exit_code,diagnostic:$diagnostic}' \
+        >>"$REPORT_FILE"
+    fi
   done
 fi
 
@@ -330,11 +548,115 @@ if [[ "$MODE" == "profile-parity" ]]; then
     "$NORMALIZED_FILE" >>"$REPORT_FILE"
 fi
 
+ENRICHED_REPORT_FILE="$REPORT_DIR/${RUN_ID}-${MODE}.enriched.jsonl"
+: >"$ENRICHED_REPORT_FILE"
+line_no=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+  if [[ -z "$line" ]]; then
+    continue
+  fi
+  line_no=$((line_no + 1))
+
+  enriched="$(jq -c \
+    --arg baseline_commit "$baseline_commit" \
+    --arg baseline_toolchain_hash "$baseline_toolchain_hash" \
+    --arg baseline_toolchain_release "$baseline_toolchain_release" \
+    --arg baseline_toolchain_host "$baseline_toolchain_host" \
+    --arg baseline_cargo_sha "$baseline_cargo_sha" \
+    '. + {
+      baseline_rust_baseline_commit: $baseline_commit,
+      baseline_rust_toolchain_commit_hash: $baseline_toolchain_hash,
+      baseline_rust_toolchain_release: $baseline_toolchain_release,
+      baseline_rust_toolchain_host: $baseline_toolchain_host,
+      baseline_cargo_lock_sha256: $baseline_cargo_sha
+    }' <<<"$line")"
+
+  rec_status="$(jq -r '.status // ""' <<<"$enriched")"
+  rec_delta="$(jq -r '.delta_classification // "none"' <<<"$enriched")"
+
+  if [[ "$rec_status" == "fail" || "$rec_delta" != "none" ]]; then
+    rec_kind="$(jq -r '.kind // "record"' <<<"$enriched")"
+    rec_scenario="$(jq -r '.scenario_id // ""' <<<"$enriched")"
+    rec_file="$(jq -r '.file // ""' <<<"$enriched")"
+    if [[ -z "$rec_scenario" ]]; then
+      rec_scenario="record-$line_no"
+    fi
+    safe_scenario="$(sanitize_name "$rec_scenario")"
+    class_hash="$(hash_hex "$RUN_ID|$MODE|$rec_kind|$safe_scenario|$line_no" | cut -c1-24)"
+    class_id="cls-${class_hash}"
+    diff_file="$DIFF_DIR/${line_no}-${rec_kind}-${safe_scenario}.json"
+
+    jq -n \
+      --arg run_id "$RUN_ID" \
+      --arg mode "$MODE" \
+      --arg kind "$rec_kind" \
+      --arg scenario_id "$rec_scenario" \
+      --arg file "$rec_file" \
+      --arg classification_record_id "$class_id" \
+      --arg baseline_commit "$baseline_commit" \
+      --arg baseline_toolchain_hash "$baseline_toolchain_hash" \
+      --arg baseline_toolchain_release "$baseline_toolchain_release" \
+      --arg baseline_toolchain_host "$baseline_toolchain_host" \
+      --arg baseline_cargo_sha "$baseline_cargo_sha" \
+      --argjson line_no "$line_no" \
+      --argjson record "$enriched" \
+      '{
+        kind: "parity_diff_artifact",
+        run_id: $run_id,
+        mode: $mode,
+        line_no: $line_no,
+        source_kind: $kind,
+        scenario_id: $scenario_id,
+        file: $file,
+        classification_record_id: $classification_record_id,
+        expected_provenance: {
+          rust_baseline_commit: $baseline_commit,
+          rust_toolchain_commit_hash: $baseline_toolchain_hash,
+          rust_toolchain_release: $baseline_toolchain_release,
+          rust_toolchain_host: $baseline_toolchain_host,
+          cargo_lock_sha256: $baseline_cargo_sha
+        },
+        record: $record
+      }' >"$diff_file"
+
+    enriched="$(jq -c \
+      --arg class_id "$class_id" \
+      --arg diff_file "$diff_file" \
+      '.classification_record_id = (.classification_record_id // $class_id)
+       | .diff_artifact = (.diff_artifact // $diff_file)' <<<"$enriched")"
+  fi
+
+  echo "$enriched" >>"$ENRICHED_REPORT_FILE"
+done <"$REPORT_FILE"
+
+mv "$ENRICHED_REPORT_FILE" "$REPORT_FILE"
+
+jq -c \
+  '
+  select(.status == "fail")
+  | {
+      kind,
+      run_id,
+      mode,
+      file: (.file // ""),
+      scenario_id: (.scenario_id // ""),
+      codec: (.codec // ""),
+      profile: (.profile // ""),
+      status,
+      parity,
+      delta_classification,
+      semantic_digest: (.semantic_digest // ""),
+      diagnostic: (.diagnostic // "")
+    }
+  ' \
+  "$REPORT_FILE" >"$DIFF_FILE"
+
 jq -s \
   --arg run_id "$RUN_ID" \
   --arg mode "$MODE" \
   --arg report_file "$REPORT_FILE" \
   --arg summary_file "$SUMMARY_FILE" \
+  --arg diff_file "$DIFF_FILE" \
   '
   {
     run_id: $run_id,
@@ -345,7 +667,29 @@ jq -s \
     skip: (map(select(.status == "skip")) | length),
     fixture_records: (map(select(.kind == "fixture")) | length),
     parity_records: (map(select(.kind == "codec_equivalence" or .kind == "profile_parity")) | length),
+    diff_records: (map(select(.status == "fail")) | length),
+    fail_by_kind: (
+      reduce (map(select(.status == "fail"))[]) as $row
+        ({}; .[$row.kind] = ((.[$row.kind] // 0) + 1))
+    ),
+    provenance_mismatch_records: (
+      map(
+        select(
+          .kind == "fixture"
+          and .status == "fail"
+          and (
+            (.diagnostic | contains("rust_baseline_commit mismatch"))
+            or (.diagnostic | contains("rust_toolchain_commit_hash mismatch"))
+            or (.diagnostic | contains("rust_toolchain_release mismatch"))
+            or (.diagnostic | contains("rust_toolchain_host mismatch"))
+            or (.diagnostic | contains("cargo_lock_sha256 mismatch"))
+          )
+        )
+      )
+      | length
+    ),
     report_file: $report_file,
+    diff_file: $diff_file,
     summary_file: $summary_file
   }' \
   "$REPORT_FILE" >"$SUMMARY_FILE"
@@ -353,9 +697,10 @@ jq -s \
 fail_count="$(jq -r '.fail' "$SUMMARY_FILE")"
 fixture_count="$(jq -r '.fixture_records' "$SUMMARY_FILE")"
 parity_count="$(jq -r '.parity_records' "$SUMMARY_FILE")"
+diff_count="$(jq -r '.diff_records' "$SUMMARY_FILE")"
 
 echo "[asx] conformance[$MODE]: report=$REPORT_FILE summary=$SUMMARY_FILE" >&2
-echo "[asx] conformance[$MODE]: fixture_records=$fixture_count parity_records=$parity_count fail=$fail_count" >&2
+echo "[asx] conformance[$MODE]: fixture_records=$fixture_count parity_records=$parity_count fail=$fail_count diff_records=$diff_count" >&2
 
 exit_code=0
 if [[ "$fail_count" -gt 0 ]]; then
