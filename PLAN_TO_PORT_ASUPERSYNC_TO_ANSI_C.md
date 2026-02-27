@@ -81,7 +81,8 @@ Recreate the **semantic contract** of asupersync’s kernel:
 
 - predictable memory footprint,
 - explicit allocator integration,
-- easy platform adaptation (POSIX, Windows, freestanding).
+- easy platform adaptation (POSIX, Windows, freestanding),
+- deployment utility across extreme low-latency systems (HFT), safety-critical embedded systems (automotive), and constrained edge devices (routers) without semantic forks.
 
 ## 2.4 Non-Goal for Initial Release
 
@@ -95,6 +96,19 @@ The embedded strategy is **semantic fidelity + operational adaptation**, not fea
 - no “embedded-lite” behavior forks that weaken correctness or lifecycle guarantees,
 - constrained targets are handled by explicit resource contracts, bounded data structures, and deterministic backpressure,
 - if a platform capability is missing, provide an adapter/fallback preserving semantics with documented cost envelopes.
+
+## 2.6 Cross-Vertical Promise (HFT <-> Automotive <-> Router)
+
+The same semantic kernel must satisfy all three audiences:
+
+- HFT architects: ultra-low tail latency and deterministic replay for incident forensics,
+- automotive/industrial engineers: fail-safe behavior, bounded response, watchdog-friendly operation,
+- router/edge engineers: low-footprint operation with robust behavior under sustained resource pressure.
+
+Rule:
+
+- optimize the resource/operational plane per vertical,
+- never alter lifecycle legality, cancellation semantics, obligation linearity, or outcome ordering.
 
 ## 3. Porting Methodology (Essence Extraction)
 
@@ -531,6 +545,16 @@ Execution rule:
 - each lever must pass EV gate (`EV >= 2.0`) from measured hotspots before implementation.
 - one lever at a time with explicit rollback.
 
+## 6.15 Cross-Vertical Fidelity Contract (New)
+
+For every optimization or vertical-specific adaptation:
+
+- **semantic delta budget = zero** by default,
+- any requested non-zero semantic delta requires explicit owner sign-off and a dedicated fixture family,
+- ordering/timestamp tie-break semantics remain canonical and reproducible,
+- failure atomicity is preserved at all resource boundaries,
+- every vertical profile must produce auditable traces and canonical semantic digests.
+
 ## 7. ANSI C Target Architecture
 
 ## 7.1 Layered Runtime Design
@@ -675,6 +699,22 @@ Rule:
 - resource-plane tuning may change performance envelopes only;
 - it must never change semantic outcomes, transition legality, or error taxonomy.
 
+## 7.9 Vertical Acceleration Adapters (Optional, Semantic-Lockstep)
+
+These adapters maximize usefulness by domain while remaining behaviorally isomorphic:
+
+- `asx_accel_hft`:
+  - cache-aware queue layout, optional lock-free fast paths, NUMA and core-pinning hints,
+  - PTP/monotonic clock discipline hooks for timestamp quality,
+  - burst-absorption and deterministic overload behavior.
+- `asx_accel_automotive`:
+  - static-memory-first mode, watchdog checkpoint hooks, deadline-observation API,
+  - deterministic degraded-mode transitions under overload/fault.
+- `asx_accel_router`:
+  - flash-wear-aware diagnostics, bounded telemetry, low-memory default envelopes.
+
+All adapters must pass the same semantic fixture and digest gates as core profiles.
+
 ## 8. Portability Profiles
 
 ## 8.1 Profile `ASX_PROFILE_CORE` (default)
@@ -716,6 +756,25 @@ Rule:
 
 All classes expose the same API and semantics. Capacity misses must produce deterministic, classified failures rather than silent drops.
 
+## 8.7 Profile `ASX_PROFILE_HFT`
+
+- tuned for ultra-low-latency host deployments,
+- optional acceleration adapters for cache/NUMA/pinning aware scheduling,
+- strict tail-latency/jitter observability and gate enforcement,
+- full semantic parity with `ASX_PROFILE_CORE`.
+
+## 8.8 Profile `ASX_PROFILE_AUTOMOTIVE`
+
+- static-memory and bounded-execution defaults for safety-critical environments,
+- watchdog/deadline checkpoint hooks as first-class APIs,
+- deterministic degraded-mode and fail-safe transition requirements,
+- full semantic parity with `ASX_PROFILE_CORE`.
+
+## 8.9 Compatibility Rule Across Profiles
+
+- profile differences may change throughput, latency envelope, memory footprint, and diagnostics cost,
+- profile differences may not change semantic digest outcome for shared fixtures.
+
 ## 9. Rust-to-C Conformance Strategy
 
 ## 9.1 Golden Fixture Categories
@@ -731,7 +790,10 @@ Generate canonical fixtures from Rust for:
 - MPSC reserve/send/abort scenarios,
 - timer ordering and cancellation handles,
 - allocator-failure interleaving and low-memory recovery scenarios,
-- endian/unaligned decode edge cases for binary codec safety.
+- endian/unaligned decode edge cases for binary codec safety,
+- HFT microburst and overload scenarios (tail-latency + deterministic backpressure),
+- automotive deadline/watchdog scenarios with controlled degraded-mode transitions,
+- crash/restart/replay-continuity scenarios.
 
 ## 9.2 Fixture Format
 
@@ -797,7 +859,10 @@ Introduce reproducible microbenchmarks for:
 - scheduler dispatch cost,
 - timer insertion/cancel/fire cost,
 - channel reserve/send throughput,
-- quiescence close latency under load.
+- quiescence close latency under load,
+- tail-latency (`p99`, `p99.9`, `p99.99`) and jitter histograms for HFT profile,
+- deadline miss behavior and checkpoint cost for automotive profile,
+- cold-start and restart-recovery latency for constrained embedded profiles.
 
 ## 10.5 Proof and Artifact Contract (Mandatory for Alpha Work)
 
@@ -828,7 +893,17 @@ The following gates are mandatory:
   - scenario/replay suite must pass under QEMU for those targets,
   - at least one real-device smoke run must pass before milestone closure.
 - **Profile Semantic Parity Gate**
-  - `ASX_PROFILE_CORE`, `ASX_PROFILE_FREESTANDING`, and `ASX_PROFILE_EMBEDDED_ROUTER` must emit identical canonical semantic digests for shared fixtures.
+  - `ASX_PROFILE_CORE`, `ASX_PROFILE_FREESTANDING`, `ASX_PROFILE_EMBEDDED_ROUTER`, `ASX_PROFILE_HFT`, and `ASX_PROFILE_AUTOMOTIVE` must emit identical canonical semantic digests for shared fixtures.
+- **Tail-Latency/Jitter Gate (HFT)**
+  - profile-specific tail and jitter budgets must pass on dedicated benchmark fixtures,
+  - overflow behavior under burst conditions must remain deterministic.
+- **Deadline/Watchdog Gate (Automotive)**
+  - checkpoint and deadline-observation scenarios must pass,
+  - degraded-mode transitions must be deterministic and audit-traceable.
+- **Crash/Restart Replay Continuity Gate**
+  - replay after restart must reproduce canonical semantic digest for persisted scenarios.
+- **Semantic Delta Budget Gate**
+  - any non-zero semantic delta fails CI unless explicitly approved and fixture-scoped.
 
 ## 11. Performance and Footprint Targets
 
@@ -840,6 +915,8 @@ Initial target budgets for kernel profile:
 - Deterministic profile binary footprint suitable for embedded-class deployment.
 - Bounded-memory mode must fail deterministically before ceiling breach (no partial mutation).
 - Router-class defaults should target practical operation on low-end hardware (e.g., 32-128 MB RAM class) without semantic degradation.
+- HFT profile must enforce explicit tail-latency/jitter SLO budgets (set after baseline capture).
+- Automotive profile must enforce explicit deadline/checkpoint budgets and deterministic degraded-mode behavior.
 
 These are validated per phase; thresholds will be refined once first baseline exists.
 
@@ -912,6 +989,9 @@ Deliverables:
   - `mipsel-openwrt-linux-musl`,
   - `armv7-openwrt-linux-muslgnueabi`,
   - `aarch64-openwrt-linux-musl`,
+- HFT/automotive profile scaffolding:
+  - profile config schemas and benchmark harness stubs,
+  - watchdog/deadline hook interfaces,
 - QEMU harness for router-class scenario and replay tests,
 - baseline lint/sanitizer configs,
 - codec abstraction interface (`asx_codec_vtable`) with JSON and binary stubs,
@@ -922,7 +1002,8 @@ Exit criteria:
 
 - clean warnings on target compilers for empty skeleton,
 - portability CI matrix green,
-- embedded target matrix jobs green.
+- embedded target matrix jobs green,
+- HFT/automotive profile harness bootstraps green.
 
 ## Phase 3: `asx_core` Implementation
 
@@ -970,6 +1051,8 @@ Deliverables:
 - deterministic event hash-chain output for replay identity,
 - small-state exhaustive scheduler checker (model-style test harness) for fairness/starvation edge cases,
 - optional cycle-budget checkpoints for long-running loops on low-frequency CPUs,
+- HFT lane instrumentation for tail-latency/jitter measurement and deterministic overload handling,
+- automotive deadline-checkpoint probes and deterministic degraded-mode triggers,
 - timer wheel + cancellation handles.
 
 Exit criteria:
@@ -1002,6 +1085,7 @@ Deliverables:
 - embedded trace modes:
   - RAM-ring default for low-flash targets,
   - wear-aware persistent spill mode with bounded write cadence,
+- crash/restart replay continuity pack for persisted traces and snapshots,
 - snapshot/export hooks needed for conformance.
 
 Exit criteria:
@@ -1030,11 +1114,31 @@ Exit criteria:
 Deliverables:
 
 - prioritized subset only (decided after kernel maturity),
-- each subsystem has spec + conformance before code lands.
+- each subsystem has spec + conformance before code lands,
+- vertical adapter packs (`hft`, `automotive`, `router`) with isomorphism artifacts and fallback paths.
 
 Exit criteria:
 
 - subsystem passes parity gates before broadening scope further.
+
+## Phase 10: Cross-Vertical Excellence and Certification-Ready Artifacts
+
+Deliverables:
+
+- cross-vertical benchmark corpus (`hft`, `automotive`, `router`) with reproducible harness configs,
+- semantic-delta budget checker integrated in CI,
+- tail-latency/jitter and deadline/watchdog reports with trend tracking,
+- fault-injection suite:
+  - clock jitter,
+  - burst overload,
+  - allocator faults,
+  - restart/power-cut simulation where applicable,
+- certification-ready evidence bundle skeletons (traceability, test artifacts, invariant mappings).
+
+Exit criteria:
+
+- all cross-vertical hard gates green,
+- evidence bundle artifacts complete for audited release candidates.
 
 ## 14. Risk Register and Mitigations
 
@@ -1136,6 +1240,30 @@ Mitigation:
 - require cross-profile semantic digest equivalence in CI,
 - block merges that improve footprint by changing lifecycle/cancellation/linearity behavior.
 
+## Risk 10: Domain-Specific Fork Drift (HFT/Automotive/Router)
+
+Problem:
+
+- optimization pressure can create hidden behavior forks between domain profiles.
+
+Mitigation:
+
+- mandatory cross-profile digest equivalence,
+- semantic-delta budget gate in CI,
+- explicit fallback path and isomorphism artifact for each domain optimization.
+
+## Risk 11: Tail-Latency Blind Spots
+
+Problem:
+
+- average-latency improvements can hide catastrophic `p99.9+` regressions.
+
+Mitigation:
+
+- dedicated tail/jitter gates and trend monitoring,
+- burst-overload scenario fixtures,
+- reject merges that improve mean latency while violating tail/jitter budgets.
+
 ## 15. Definition of Done (Kernel Milestone)
 
 Kernel milestone is complete when all are true:
@@ -1151,9 +1279,12 @@ Kernel milestone is complete when all are true:
 - differential fuzzing parity gate green,
 - embedded target matrix gate green (build + QEMU + device smoke),
 - cross-profile semantic parity digests match for shared fixture set,
+- HFT tail-latency/jitter gate green,
+- automotive deadline/watchdog gate green,
+- semantic-delta budget gate green,
 - `FEATURE_PARITY.md` marks kernel rows `parity-pass`.
 
-## 16. Immediate Work Plan (Next 16 Tasks)
+## 16. Immediate Work Plan (Next 24 Tasks)
 
 1. Create `docs/EXISTING_ASUPERSYNC_STRUCTURE.md` with exact state-machine tables.
 2. Add a Rust->C guarantee-substitution table in `docs/EXISTING_ASUPERSYNC_STRUCTURE.md` with proof artifacts per row.
@@ -1168,9 +1299,17 @@ Kernel milestone is complete when all are true:
 11. Add per-boundary exhaustion tests (arena alloc, queue growth, timer ops, obligation ops).
 12. Build Rust fixture capture tool for core semantic scenarios.
 13. Add conformance runner that compares C outputs to Rust fixtures (JSON first, then binary equivalence).
-14. Add cross-profile semantic digest checks (`CORE` vs `FREESTANDING` vs `EMBEDDED_ROUTER`) for shared fixtures.
+14. Add cross-profile semantic digest checks (`CORE` vs `FREESTANDING` vs `EMBEDDED_ROUTER` vs `HFT` vs `AUTOMOTIVE`) for shared fixtures.
 15. Add router target cross-compile jobs + QEMU scenario runs for mipsel/armv7/aarch64.
 16. Add Rust↔C differential fuzzing harness with automatic counterexample minimization.
+17. Create `docs/HFT_PROFILE.md` with latency/jitter SLO strategy, overload semantics, and benchmarking method.
+18. Create `docs/AUTOMOTIVE_PROFILE.md` with deadline/watchdog semantics and degraded-mode state machine.
+19. Implement semantic-delta budget checker and CI gate (`default=zero`).
+20. Add HFT microburst fixture family and tail-latency/jitter benchmark harness.
+21. Add automotive deadline/checkpoint fixture family and watchdog integration tests.
+22. Add crash/restart replay continuity fixtures and persistence tests.
+23. Add trend reports for `p99/p99.9/p99.99` and deadline violation counts.
+24. Add vertical adapter isomorphism artifacts (`hft`, `automotive`, `router`) with fallback validation.
 
 ## 17. Open Decisions Requiring Owner Confirmation
 
@@ -1190,6 +1329,12 @@ Remaining open decisions:
 2. Embedded memory mode:
    - dynamic allocation only initially, or
    - static arena mode required in first milestone?
+3. HFT default runtime policy:
+   - default to low-jitter busy-spin lanes where supported, or
+   - default to hybrid spin/yield policy for lower power cost?
+4. Automotive assurance target for first release:
+   - provide certification-ready evidence bundle only, or
+   - also include first-pass mapping templates for ISO 26262 work products?
 
 ## 18. Companion Documents Required Next
 
@@ -1346,3 +1491,54 @@ Embedded optimizations are accepted only if:
 - canonical semantic digest parity remains intact across profiles,
 - failure-atomicity and deterministic error semantics are preserved,
 - and measured embedded target gains are demonstrated (latency/throughput/footprint/power proxy).
+
+## 21. Idea-Wizard Round 3: Cross-Vertical “Max Fidelity + Max Utility” (HFT to Automotive)
+
+This round focuses on making the ANSI C port simultaneously compelling for ultra-low-latency finance, safety-critical embedded systems, and constrained network edge deployments without semantic compromise.
+
+## 21.1 Top 5 Ideas (Best -> Worst)
+
+1. **Semantic Delta Budget = Zero (CI-Enforced)**
+   - Why: prevents every class of “small pragmatic drift” from silently eroding faithfulness.
+   - Integration: sections 6.15, 10.6, 16.19.
+
+2. **Dual-Lens Performance Governance (Mean + Tail + Deadline)**
+   - Why: HFT cares about tails, automotive cares about deadlines, routers care about sustained pressure.
+   - Integration: sections 10.4, 10.6, 11, 16.20-16.23.
+
+3. **Vertical Adapter Isomorphism Artifacts**
+   - Why: allows aggressive domain tuning while proving behavior equivalence.
+   - Integration: sections 7.9, 13 Phase 9/10, 16.24.
+
+4. **Crash/Restart Replay Continuity by Design**
+   - Why: production systems fail; trust depends on post-failure reproducibility.
+   - Integration: sections 9.1, 10.6, 13 Phase 7, 16.22.
+
+5. **Certification-Ready Evidence Bundles**
+   - Why: automotive and regulated environments require traceability, not just passing tests.
+   - Integration: section 13 Phase 10 deliverables.
+
+## 21.2 Next Best 10 Ideas
+
+6. **Portable memory-model litmus suite for critical atomics paths**
+7. **Per-profile deterministic overload policy catalog with formal fixture coverage**
+8. **Lock-free fast-path shadow implementation with mandatory fallback equivalence**
+9. **Time virtualization layer for jitter and clock anomaly replay**
+10. **Multi-tier telemetry modes: forensic, ops-light, and ultra-minimal**
+11. **Hot-reload-safe config boundaries with semantic freeze points**
+12. **Deterministic “circuit-breaker” behavior for cascading overload scenarios**
+13. **Cross-compiler codegen diff checks on critical kernels**
+14. **Replay-guided performance regression localization**
+15. **Golden domain scenario packs (market-open burst, CAN fault burst, router storm)**
+
+## 21.3 Promoted in This Revision
+
+- Top #1, #2, #3, #4, and #5 are promoted into core gates, phases, risks, and immediate tasks in this revision.
+
+## 21.4 Operational Rule
+
+Cross-vertical improvements are accepted only if:
+
+- semantic digest parity is preserved across profiles,
+- tail/deadline constraints improve or stay within budget,
+- fallback and rollback paths are artifact-backed and tested.
