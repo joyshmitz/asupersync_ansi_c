@@ -17,6 +17,9 @@ typedef enum {
     /* Success */
     ASX_OK = 0,
 
+    /* Non-error status (1-9) */
+    ASX_E_PENDING              = 1,   /* operation not yet complete */
+
     /* General errors (1xx) */
     ASX_E_INVALID_ARGUMENT     = 100,
     ASX_E_INVALID_STATE        = 101,
@@ -38,6 +41,8 @@ typedef enum {
     ASX_E_TASK_NOT_FOUND       = 400,
     ASX_E_SCHEDULER_UNAVAILABLE = 401,
     ASX_E_NAME_CONFLICT        = 402,
+    ASX_E_TASK_NOT_COMPLETED   = 403,
+    ASX_E_POLL_BUDGET_EXHAUSTED = 404,
 
     /* Obligation errors (5xx) */
     ASX_E_OBLIGATION_ALREADY_RESOLVED = 500,
@@ -62,10 +67,12 @@ typedef enum {
     ASX_E_TIMERS_PENDING       = 801,
 
     /* Quiescence errors (9xx) */
-    ASX_E_TASKS_STILL_ACTIVE   = 900,
+    ASX_E_TASKS_STILL_ACTIVE     = 900,
     ASX_E_OBLIGATIONS_UNRESOLVED = 901,
-    ASX_E_REGIONS_NOT_CLOSED   = 902,
-    ASX_E_INCOMPLETE_CHILDREN  = 903,
+    ASX_E_REGIONS_NOT_CLOSED     = 902,
+    ASX_E_INCOMPLETE_CHILDREN    = 903,
+    ASX_E_QUIESCENCE_NOT_REACHED = 904,
+    ASX_E_QUIESCENCE_TASKS_LIVE  = 905,
 
     /* Resource exhaustion (10xx) */
     ASX_E_RESOURCE_EXHAUSTED   = 1000,

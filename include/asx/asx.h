@@ -36,4 +36,7 @@
 #include <asx/core/cancel.h>
 #include <asx/core/transition.h>
 
+/* Runtime (walking skeleton — bd-ix8.8) */
+#include <asx/runtime/runtime.h>
+
 #endif /* ASX_ASX_H */

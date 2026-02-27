@@ -9,6 +9,7 @@
 const char *asx_status_str(asx_status s) {
     switch (s) {
     case ASX_OK:                          return "OK";
+    case ASX_E_PENDING:                   return "pending";
     case ASX_E_INVALID_ARGUMENT:          return "invalid argument";
     case ASX_E_INVALID_STATE:             return "invalid state";
     case ASX_E_NOT_FOUND:                 return "not found";
@@ -23,6 +24,8 @@ const char *asx_status_str(asx_status s) {
     case ASX_E_TASK_NOT_FOUND:            return "task not found";
     case ASX_E_SCHEDULER_UNAVAILABLE:     return "scheduler unavailable";
     case ASX_E_NAME_CONFLICT:             return "name conflict";
+    case ASX_E_TASK_NOT_COMPLETED:        return "task not completed";
+    case ASX_E_POLL_BUDGET_EXHAUSTED:     return "poll budget exhausted";
     case ASX_E_OBLIGATION_ALREADY_RESOLVED: return "obligation already resolved";
     case ASX_E_UNRESOLVED_OBLIGATIONS:    return "unresolved obligations";
     case ASX_E_CANCELLED:                 return "cancelled";
@@ -41,6 +44,8 @@ const char *asx_status_str(asx_status s) {
     case ASX_E_OBLIGATIONS_UNRESOLVED:    return "obligations unresolved";
     case ASX_E_REGIONS_NOT_CLOSED:        return "regions not closed";
     case ASX_E_INCOMPLETE_CHILDREN:       return "incomplete children";
+    case ASX_E_QUIESCENCE_NOT_REACHED:    return "quiescence not reached";
+    case ASX_E_QUIESCENCE_TASKS_LIVE:     return "quiescence tasks still live";
     case ASX_E_RESOURCE_EXHAUSTED:        return "resource exhausted";
     case ASX_E_STALE_HANDLE:              return "stale handle";
     case ASX_E_HOOK_MISSING:              return "required runtime hook missing";
