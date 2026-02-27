@@ -23,6 +23,12 @@ typedef enum {
     ASX_CODEC_KIND_BIN  = 1
 } asx_codec_kind;
 
+enum {
+    ASX_CODEC_BIN_FRAME_SCHEMA_VERSION_V1 = 1u,
+    ASX_CODEC_BIN_FRAME_MESSAGE_FIXTURE   = 1u,
+    ASX_CODEC_BIN_FLAG_CHECKSUM_FOOTER    = 1u
+};
+
 typedef struct {
     char *rust_baseline_commit;
     char *rust_toolchain_commit_hash;
