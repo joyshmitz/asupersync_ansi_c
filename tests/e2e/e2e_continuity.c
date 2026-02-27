@@ -12,6 +12,7 @@
  */
 
 #include <asx/asx.h>
+#include <asx/runtime/telemetry.h>
 #include <asx/runtime/trace.h>
 #include <stdio.h>
 #include <string.h>
@@ -72,6 +73,21 @@ static asx_status poll_yield_once(void *ud, asx_task_id self)
     ASX_CO_END(&s->co);
 }
 
+static void emit_continuity_signature(uint64_t scenario_tag, uint32_t task_count)
+{
+    uint32_t i;
+
+    IGNORE_RC(asx_telemetry_set_tier(ASX_TELEMETRY_FORENSIC));
+    asx_telemetry_emit(ASX_TRACE_REGION_OPEN, scenario_tag, task_count);
+    for (i = 0; i < task_count; i++) {
+        uint64_t entity = scenario_tag + (uint64_t)i + 1u;
+        asx_telemetry_emit(ASX_TRACE_TASK_SPAWN, entity, scenario_tag);
+        asx_telemetry_emit(ASX_TRACE_SCHED_POLL, entity, (uint64_t)i);
+        asx_telemetry_emit(ASX_TRACE_SCHED_COMPLETE, entity, 0u);
+    }
+    asx_telemetry_emit(ASX_TRACE_SCHED_QUIESCENT, scenario_tag, task_count);
+}
+
 /* -------------------------------------------------------------------
  * Helper: run a canonical scenario and capture trace
  * ------------------------------------------------------------------- */
@@ -88,6 +104,7 @@ static void run_canonical_scenario(void)
 
     budget = asx_budget_from_polls(16);
     IGNORE_RC(asx_scheduler_run(rid, &budget));
+    emit_continuity_signature(0xC010u, 2u);
 }
 
 /* -------------------------------------------------------------------

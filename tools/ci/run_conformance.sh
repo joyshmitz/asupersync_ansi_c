@@ -20,8 +20,8 @@ Options:
   --help
 
 Environment:
-  FAIL_ON_EMPTY_FIXTURES=1      fail when no fixture JSON files are present
-  FAIL_ON_INCOMPLETE_PARITY=1   fail when parity mode has no comparable pairs
+  FAIL_ON_EMPTY_FIXTURES=1      fail when no fixture JSON files are present (default: 1)
+  FAIL_ON_INCOMPLETE_PARITY=1   fail when parity mode has no comparable pairs (default: 1)
   FAIL_ON_MISSING_JQ=1          fail when jq is missing (default: 1)
   CONFORMANCE_CFLAGS="..."      override compile flags for smoke binary
 EOF
@@ -52,8 +52,8 @@ FIXTURES_ROOT="${FIXTURES_ROOT:-$REPO_ROOT/fixtures/rust_reference}"
 REPORT_DIR="${REPORT_DIR:-$REPO_ROOT/tools/ci/artifacts/conformance}"
 RUN_ID=""
 STRICT=0
-FAIL_ON_EMPTY_FIXTURES="${FAIL_ON_EMPTY_FIXTURES:-0}"
-FAIL_ON_INCOMPLETE_PARITY="${FAIL_ON_INCOMPLETE_PARITY:-0}"
+FAIL_ON_EMPTY_FIXTURES="${FAIL_ON_EMPTY_FIXTURES:-1}"
+FAIL_ON_INCOMPLETE_PARITY="${FAIL_ON_INCOMPLETE_PARITY:-1}"
 FAIL_ON_MISSING_JQ="${FAIL_ON_MISSING_JQ:-1}"
 BASELINE_FILE="$REPO_ROOT/docs/rust_baseline_inventory.json"
 SCHEMA_FILE="$REPO_ROOT/schemas/canonical_fixture.schema.json"
@@ -667,6 +667,10 @@ jq -s \
     skip: (map(select(.status == "skip")) | length),
     fixture_records: (map(select(.kind == "fixture")) | length),
     parity_records: (map(select(.kind == "codec_equivalence" or .kind == "profile_parity")) | length),
+    comparable_parity_records: (
+      map(select((.kind == "codec_equivalence" or .kind == "profile_parity") and .status != "skip"))
+      | length
+    ),
     diff_records: (map(select(.status == "fail")) | length),
     fail_by_kind: (
       reduce (map(select(.status == "fail"))[]) as $row
@@ -697,10 +701,11 @@ jq -s \
 fail_count="$(jq -r '.fail' "$SUMMARY_FILE")"
 fixture_count="$(jq -r '.fixture_records' "$SUMMARY_FILE")"
 parity_count="$(jq -r '.parity_records' "$SUMMARY_FILE")"
+comparable_parity_count="$(jq -r '.comparable_parity_records' "$SUMMARY_FILE")"
 diff_count="$(jq -r '.diff_records' "$SUMMARY_FILE")"
 
 echo "[asx] conformance[$MODE]: report=$REPORT_FILE summary=$SUMMARY_FILE" >&2
-echo "[asx] conformance[$MODE]: fixture_records=$fixture_count parity_records=$parity_count fail=$fail_count diff_records=$diff_count" >&2
+echo "[asx] conformance[$MODE]: fixture_records=$fixture_count parity_records=$parity_count comparable_parity_records=$comparable_parity_count fail=$fail_count diff_records=$diff_count" >&2
 
 exit_code=0
 if [[ "$fail_count" -gt 0 ]]; then
@@ -710,7 +715,7 @@ if [[ "$fixture_count" -eq 0 && "$FAIL_ON_EMPTY_FIXTURES" == "1" ]]; then
   echo "[asx] conformance[$MODE]: FAIL (no fixtures and strict empty-fixture policy enabled)" >&2
   exit_code=1
 fi
-if [[ "$MODE" != "conformance" && "$parity_count" -eq 0 && "$FAIL_ON_INCOMPLETE_PARITY" == "1" ]]; then
+if [[ "$MODE" != "conformance" && "$comparable_parity_count" -eq 0 && "$FAIL_ON_INCOMPLETE_PARITY" == "1" ]]; then
   echo "[asx] conformance[$MODE]: FAIL (no comparable parity pairs and strict parity policy enabled)" >&2
   exit_code=1
 fi
