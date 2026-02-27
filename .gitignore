@@ -59,3 +59,6 @@ artifacts/
 
 # Local issue-tracking state
 .beads/
+
+# bv (beads viewer) local config and caches
+.bv/

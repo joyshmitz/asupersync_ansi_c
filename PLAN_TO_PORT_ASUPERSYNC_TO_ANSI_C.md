@@ -37,6 +37,21 @@ This revision is grounded in direct review of the Rust codebase and docs:
 - `/dp/asupersync/src/runtime/scheduler/mod.rs`
 - `/dp/asupersync/src/time/wheel.rs`
 
+## 1.1 Baseline Freeze (Non-Negotiable)
+
+Porting and parity are meaningless against a moving target. For each milestone:
+
+- Rust reference baseline commit is pinned (for example `RUST_BASELINE_COMMIT=<hash>`).
+- Rust toolchain snapshot (`rustc -Vv`) is recorded with fixture artifacts.
+- `Cargo.lock` snapshot is stored and treated as fixture provenance.
+
+Upstream drift is handled by explicit rebase protocol:
+
+1. cut new baseline commit,
+2. regenerate fixtures for both old and new baselines,
+3. classify deltas as either intentional upstream semantic changes or C regressions/spec defects,
+4. update C parity target only after classification is complete.
+
 Scale snapshot used for planning:
 
 - `516` Rust source files under `src/`
@@ -63,10 +78,38 @@ This confirms we need explicit scope waves and cannot “port everything at once
 - Language baseline policy:
   - C99 is allowed where it materially simplifies correctness and maintainability.
   - Keep interfaces and core data structures portability-first (no compiler-specific extensions in core).
+- Undefined behavior policy is explicit and mechanically enforced (see 2.1.1).
+- Warnings-as-errors CI policy is mandatory on supported compilers.
 - No hidden runtime dependency on any external async executor.
 - Must support constrained/embedded use cases.
 - Deterministic mode is first-class, not an afterthought.
 - Correctness invariants must be test-enforced.
+
+## 2.1.1 Portable C Subset and UB Elimination Contract
+
+Core rule: if a construct can produce undefined behavior on any target, it is either banned in `asx_core`/kernel or wrapped in a single audited primitive with tests/fuzz/sanitizer coverage.
+
+Kernel subset contract:
+
+- no type-punning through incompatible pointers (byte reinterpretation only via `memcpy`),
+- no reliance on signed overflow,
+- no shifts by `>= bitwidth`,
+- no unaligned loads/stores in decode paths (use `memcpy`-based loads),
+- no reading uninitialized memory (including padding) in hashes/digests/serialization,
+- no pointer provenance tricks (integer<->pointer smuggling),
+- no implicit endianness dependence in wire/binary formats.
+
+Enforcement artifacts:
+
+- `docs/C_PORTABILITY_RULES.md`,
+- UB-focused fuzzing for codec and fixture parsing,
+- sanitizer/static-analysis CI where supported,
+- endian/unaligned cross-target decode suites.
+
+## 2.1.2 Tooling Dependency Policy
+
+The runtime has zero third-party dependencies.
+Tooling/tests may use dependencies when this materially improves verification confidence (fixture capture, minimizers, fuzz harnesses, report generators), because those dependencies do not ship in runtime artifacts.
 
 ## 2.2 Primary Port Goal
 
@@ -87,6 +130,20 @@ Recreate the **semantic contract** of asupersync’s kernel:
 ## 2.4 Non-Goal for Initial Release
 
 “Feature parity with every Rust module” is not the initial objective. Kernel parity is.
+
+## 2.4.1 Relationship to Existing Rust Codebase
+
+The ANSI C runtime is a companion implementation, not a replacement for the Rust crate.
+
+Initial-release stance:
+
+- no mandatory Rust<->C FFI bridge in kernel milestone,
+- no mandatory cross-language channel interop in kernel milestone,
+- shared contract is semantic spec + fixture corpus + parity artifacts, not API shape identity.
+
+Post-kernel consideration:
+
+- optional FFI/interop tracks can open in later waves with dedicated fixtures and parity evidence.
 
 ## 2.5 Embedded-First Promise Without Feature Compromise
 
@@ -275,9 +332,16 @@ Mechanism:
 - **Protothreads on Region Arenas:** Implement Duff's Device-based coroutine macros (`ASX_CO_BEGIN`, `ASX_CO_YIELD`, `ASX_CO_END`) to flatten async logic into straight-line C functions.
 - Mandate that the "captured environment" (the Future's state) is strictly allocated inside the parent **Region's Arena**, never via `malloc`.
 
+Hard correctness constraints (mandatory):
+
+- no stack locals may be relied upon across `ASX_CO_YIELD()` boundaries unless copied into task state,
+- no borrowed raw pointers into mutable internals may persist across yields (stable handles/IDs only),
+- CI lint rule must flag suspicious yield usage and require explicit waiver annotations for exceptional cases.
+
 Why this matters:
 
 - prevents the #1 cause of memory leaks in C async runtimes (forgetting to free a suspended task's state). When the region closes, the arena is wiped—perfectly mirroring Rust's `Drop` of a Future.
+- prevents silent resume-time corruption from stack/local lifetime misuse across yield boundaries.
 
 ### B) Replacing Rust Typestate and Exhaustive Enums
 
@@ -286,6 +350,7 @@ Mechanism:
 - **Bitmasked Generational Typestates:** Encode the state machine into opaque 64-bit handles: `[ 16-bit type_tag | 16-bit state_mask | 32-bit arena_index ]`. Every API endpoint performs an O(1) bitwise AND against its expected `state_mask`.
 - Define transition matrices using X-macro generated tables:
   - one table each for region/task/obligation/cancellation.
+- Optional zero-drift extractor path: auto-generate X-macro headers and invariant YAML from pinned Rust baseline metadata in tooling (prefer AST extraction using a small Rust `syn`-based parser under `tools/`), then require parity review before promotion.
 - Generate:
   - state enum,
   - transition validator,
@@ -628,12 +693,61 @@ docs/
 - Context passed explicitly (`asx_runtime*`, `asx_task_ctx*`).
 - Error returns are explicit status codes, never hidden side channels.
 
+## 7.3.1 API/ABI Stability Contract
+
+Adoption-critical rule set:
+
+- explicit API version macros in public headers (`ASX_API_VERSION_MAJOR/MINOR/PATCH`),
+- stable symbol visibility macro (`ASX_API`) for static/dynamic linking portability,
+- public config structs use a size-field pattern (`cfg.size = sizeof(cfg)`) unless explicitly frozen,
+- no breaking changes in minor/patch versions,
+- error code stability policy:
+  - new codes may be added,
+  - existing codes cannot silently change meaning,
+  - codes are grouped into stable families with published mapping.
+
+Required artifacts:
+
+- `docs/API_ABI_STABILITY.md`,
+- CI consumer-shim job that compiles against public headers only.
+
+## 7.3.2 API Ergonomics Validation Gate
+
+Before public header freeze, compile and review realistic usage vignettes:
+
+- lifecycle (spawn/cancel/drain/close),
+- obligation reserve/commit/abort flow,
+- budget exhaustion handling,
+- deterministic replay invocation,
+- freestanding target integration with custom hooks.
+
+Gate outcome:
+
+- if ergonomics are unnecessarily hostile (boilerplate or footguns), revise headers before lock.
+
+## 7.3.3 Error Propagation Contract (`must_use` + Context Ledger)
+
+- state-transition/acquisition APIs use compiler-enforced must-use semantics (`warn_unused_result`/equivalent),
+- failure propagation helpers record contextual breadcrumbs (`file/line/op`) in task-local zero-allocation ledger before bubbling status,
+- error logs must remain deterministic in deterministic mode.
+
+## 7.3.4 Public API Misuse Catalog and Fixtureization
+
+To replace Rust compile-time misuse rejection with explicit C guidance and tests:
+
+- publish `docs/API_MISUSE_CATALOG.md` containing concrete invalid-usage examples,
+- for each misuse pattern, define expected status/error result and logging behavior,
+- turn catalog entries into conformance fixtures so misuse handling remains stable across profiles and codecs.
+
+Rule:
+- a new public API surface is not "done" until valid-use examples and misuse fixtures are both present.
+
 ## 7.4 Task Execution Model in C
 
 Because C has no `async/await`, the runtime will use explicit pollable tasks. To prevent this from becoming an unergonomic mess, we mandate:
 
 - **State Machine Ergonomics:** A formalized macro suite (e.g., Protothreads / Duff's Device style `ASX_BEGIN()`, `ASX_YIELD()`, `ASX_END()`) to make writing async C functions structured rather than manual `switch(state)` boilerplate.
-- **Memory Ownership:** Explicit memory sizing and finalization for the "opaque state pointer" (the C equivalent of a Rust Future's captured environment). `asx_task_spawn` must accept a `size_t state_size` or an explicit `free_fn` to prevent leaks on region closure.
+- **Memory Ownership (tightened):** task state memory in kernel profiles is region-arena owned. Spawn APIs accept state size + ctor/dtor hooks; dtor releases non-memory resources while memory ownership remains with region arena lifecycle.
 - **Poll Contract:** task function pointer + opaque state pointer, poll step returns `ASX_POLL_READY` or `ASX_POLL_PENDING` (plus result code).
 - **Cancellation Checks:** scheduler drives task state transitions, cancellation is observed at explicit checkpoints via task context API.
 
@@ -650,6 +764,7 @@ Because C has no `async/await`, the runtime will use explicit pollable tasks. To
 All provided via config struct at runtime creation:
 
 - allocator vtable (`malloc/realloc/free` compatible signatures),
+- optional steady-state allocator seal (`asx_runtime_seal_allocator`) to trap unexpected post-init dynamic allocation paths in hardened profiles,
 - **reactor vtable** (`epoll`/`kqueue`/`IOCP` adapter for multiplexing I/O and waking the scheduler),
 - clock function (`now_ns` monotonic),
 - entropy callback (`random_u64`) for non-deterministic mode only,
@@ -714,6 +829,20 @@ These adapters maximize usefulness by domain while remaining behaviorally isomor
   - flash-wear-aware diagnostics, bounded telemetry, low-memory default envelopes.
 
 All adapters must pass the same semantic fixture and digest gates as core profiles.
+
+## 7.10 Determinism Boundary: Time, Entropy, and External Events
+
+Deterministic mode is only credible when boundary behavior is explicit:
+
+- scheduler decisions in deterministic mode are driven by logical time,
+- external nondeterminism is either forbidden or recorded as ordered replay input,
+- `now_ns` in deterministic mode is virtualized/logical, not wall-clock sampled,
+- entropy is forbidden unless deterministic seeded PRNG stream is configured.
+
+Proof artifacts:
+
+- clock anomaly fixture family (stall/jump/jitter injections),
+- repeated-run digest stability under anomaly replay.
 
 ## 8. Portability Profiles
 
@@ -831,6 +960,20 @@ Rule:
 
 No phase can close with unknown parity status for in-scope items.
 
+## 9.5 Fixture Provenance and Upstream Drift Defense
+
+Every fixture/parity report must carry:
+
+- `rust_baseline_commit`,
+- `rust_toolchain_hash` (from `rustc -Vv` snapshot),
+- `fixture_schema_version`,
+- `scenario_dsl_version`.
+
+Runner enforcement:
+
+- parity evaluation is bound to one pinned Rust baseline per milestone,
+- provenance mismatch is hard-fail (no silent mixing of fixture generations).
+
 ## 10. Testing and Quality Program
 
 ## 10.1 Test Layers
@@ -905,6 +1048,46 @@ The following gates are mandatory:
 - **Semantic Delta Budget Gate**
   - any non-zero semantic delta fails CI unless explicitly approved and fixture-scoped.
 
+## 10.7 Static Analysis and Bounded-Proof Gates
+
+## 10.7.1 Compiler Warning/Lint Gate
+
+- GCC/Clang warnings-as-errors policy for core/kernel with high-signal warning set,
+- MSVC warnings-as-errors policy for core/public headers.
+
+Required emphasis:
+
+- narrowing conversions,
+- suspicious fallthrough/state switch quality,
+- format-string/path diagnostics in trace/log code,
+- unchecked/unused status paths in semantic-sensitive code.
+
+## 10.7.2 Static Analyzer Gate
+
+Run at least one static analyzer over core/kernel paths (tool choice can evolve).
+Findings are triaged into:
+
+- must-fix (CI failure),
+- documented false positive (waived with rationale),
+- backlog (not allowed in kernel/hard-part paths).
+
+## 10.7.3 Bounded Model-Checking Gate
+
+For small-state scheduler and transition-authority logic:
+
+- prove illegal transition rejection under bounded interleavings,
+- prove cancellation phase ordering invariants,
+- prove obligation double-resolve is unreachable in bounded model.
+
+Scope is intentionally narrow so gate remains practical.
+
+## 10.7.4 Optional Wasm Determinism Oracle
+
+Optional but high-value diagnostic gate:
+
+- compile core profile to `wasm32` sandbox target,
+- run parity suite to detect hidden host/OS coupling and UB-like nondeterminism.
+
 ## 11. Performance and Footprint Targets
 
 Initial target budgets for kernel profile:
@@ -913,6 +1096,10 @@ Initial target budgets for kernel profile:
 - O(1) timer cancel by handle generation check.
 - No heap allocations on scheduler hot path in steady state.
 - Deterministic profile binary footprint suitable for embedded-class deployment.
+- Binary footprint budgets are explicitly tracked per profile/target in CI.
+  - provisional targets:
+    - `ASX_PROFILE_CORE` kernel-only target `< 64 KB` (hard fail threshold `< 128 KB`),
+    - `ASX_PROFILE_EMBEDDED_ROUTER` with trace target `< 128 KB` (hard fail threshold `< 256 KB`).
 - Bounded-memory mode must fail deterministically before ceiling breach (no partial mutation).
 - Router-class defaults should target practical operation on low-end hardware (e.g., 32-128 MB RAM class) without semantic degradation.
 - HFT profile must enforce explicit tail-latency/jitter SLO budgets (set after baseline capture).
@@ -930,6 +1117,26 @@ Since C cannot rely on Rust’s compiler ownership model:
 - all pointer ownership paths documented and asserted in debug builds.
 
 No “silent recovery” for invariant violations in debug profile.
+
+## 12.1 Threat Model Boundaries
+
+In scope for kernel hardening:
+
+- deterministic behavior under resource exhaustion (no exploitable partial states),
+- bounded processing cost characteristics for scheduler/timer/channel internals,
+- stale-handle resistance via generation checks,
+- no leakage via uninitialized memory in serialization/logging paths.
+
+Out of scope (application/system layer responsibility):
+
+- authentication/authorization of participants,
+- encryption of payloads/trace streams,
+- physical side-channel/fault-injection defense.
+
+## 12.2 Production Fault Containment
+
+Debug profiles fail fast on invariant violations.
+Production/hardened profiles should prefer region-scoped containment over full-process abort where feasible (for example poison-and-isolate policy with explicit parent outcome propagation), with deterministic evidence artifacts.
 
 ## 13. Detailed Phase Plan
 
@@ -975,6 +1182,13 @@ Exit criteria:
 
 - implementation can proceed from spec without re-reading Rust source.
 
+Phase 1 exit review gate (mandatory):
+
+- at least one reviewer who did not author the extraction verifies transition/budget/cancel tables against pinned Rust baseline behavior,
+- ambiguities are resolved with written rulings + fixture additions,
+- forbidden-behavior catalog is cross-checked against Rust error/panic paths,
+- subsystem rows in `FEATURE_PARITY.md` marked `spec-reviewed` before Phase 2 proceeds.
+
 ## Phase 2: Build + Toolchain + Skeleton
 
 Deliverables:
@@ -1005,6 +1219,19 @@ Exit criteria:
 - embedded target matrix jobs green,
 - HFT/automotive profile harness bootstraps green.
 
+## Phase 2.5: Walking Skeleton (End-to-End Smoke Path)
+
+Deliverables:
+
+- minimal region/task runtime path that can spawn one no-op task, poll to completion, and close region,
+- minimal scheduler and quiescence smoke test wired through real public headers,
+- one deterministic integration test that runs across portability matrix and QEMU targets.
+
+Exit criteria:
+
+- one real end-to-end lifecycle path executes successfully across required targets,
+- layer integration mismatches are surfaced before full phase-3 semantic expansion.
+
 ## Phase 3: `asx_core` Implementation
 
 Deliverables:
@@ -1027,6 +1254,7 @@ Exit criteria:
 
 - all core type tests pass,
 - fixture parity pass for core semantic fixtures.
+- public APIs touched in phase include docs for preconditions/postconditions/error/ownership/thread-safety semantics.
 
 ## Phase 4: Region/Task/Obligation Tables
 
@@ -1264,6 +1492,18 @@ Mitigation:
 - burst-overload scenario fixtures,
 - reject merges that improve mean latency while violating tail/jitter budgets.
 
+## Risk 12: Rust Reference Upstream Drift
+
+Problem:
+
+- upstream Rust behavior can change while C parity work is in progress, creating moving-target confusion.
+
+Mitigation:
+
+- baseline freeze protocol (Section 1.1),
+- fixture provenance enforcement (Section 9.5),
+- explicit milestone rebase procedure with delta classification before parity target updates.
+
 ## 15. Definition of Done (Kernel Milestone)
 
 Kernel milestone is complete when all are true:
@@ -1273,6 +1513,7 @@ Kernel milestone is complete when all are true:
 - semantic invariants enforced by tests,
 - fixture parity pass for all kernel items,
 - deterministic replay hash stability in CI,
+- pinned Rust baseline commit/toolchain provenance recorded in fixtures + parity reports + `FEATURE_PARITY.md`,
 - guarantee-substitution matrix rows all mapped to implemented mechanisms or explicitly deferred,
 - portability CI matrix gate green,
 - strict OOM/resource-exhaustion suite green,
@@ -1282,34 +1523,37 @@ Kernel milestone is complete when all are true:
 - HFT tail-latency/jitter gate green,
 - automotive deadline/watchdog gate green,
 - semantic-delta budget gate green,
+- compiler warning/lint gate green (10.7.1),
+- static analysis gate green (10.7.2),
 - `FEATURE_PARITY.md` marks kernel rows `parity-pass`.
 
-## 16. Immediate Work Plan (Next 24 Tasks)
+## 16. Immediate Work Plan (Next 25 Tasks)
 
-1. Create `docs/EXISTING_ASUPERSYNC_STRUCTURE.md` with exact state-machine tables.
-2. Add a Rust->C guarantee-substitution table in `docs/EXISTING_ASUPERSYNC_STRUCTURE.md` with proof artifacts per row.
-3. Create `docs/FEATURE_PARITY.md` with kernel rows and acceptance tests.
-4. Create `docs/EMBEDDED_TARGET_PROFILES.md` with router-class resource classes (`R1/R2/R3`) and semantic parity policy.
-5. Scaffold `include/asx` and `src` with module boundaries from section 7.
-6. Implement `asx_status`, `asx_outcome`, `asx_budget`, `asx_cancel_reason`.
-7. Implement and test task/region/obligation transition validators before full runtime loop.
-8. Implement debug ghost monitors for protocol/linearity checks.
-9. Implement strict OOM/resource-exhaustion contract and failure/status taxonomy in core APIs.
-10. Add resource-contract ceilings and admission/backpressure APIs for memory/queue/timer nodes.
-11. Add per-boundary exhaustion tests (arena alloc, queue growth, timer ops, obligation ops).
-12. Build Rust fixture capture tool for core semantic scenarios.
-13. Add conformance runner that compares C outputs to Rust fixtures (JSON first, then binary equivalence).
-14. Add cross-profile semantic digest checks (`CORE` vs `FREESTANDING` vs `EMBEDDED_ROUTER` vs `HFT` vs `AUTOMOTIVE`) for shared fixtures.
-15. Add router target cross-compile jobs + QEMU scenario runs for mipsel/armv7/aarch64.
-16. Add Rust↔C differential fuzzing harness with automatic counterexample minimization.
-17. Create `docs/HFT_PROFILE.md` with latency/jitter SLO strategy, overload semantics, and benchmarking method.
-18. Create `docs/AUTOMOTIVE_PROFILE.md` with deadline/watchdog semantics and degraded-mode state machine.
-19. Implement semantic-delta budget checker and CI gate (`default=zero`).
-20. Add HFT microburst fixture family and tail-latency/jitter benchmark harness.
-21. Add automotive deadline/checkpoint fixture family and watchdog integration tests.
-22. Add crash/restart replay continuity fixtures and persistence tests.
-23. Add trend reports for `p99/p99.9/p99.99` and deadline violation counts.
-24. Add vertical adapter isomorphism artifacts (`hft`, `automotive`, `router`) with fallback validation.
+1. Pin Rust baseline commit and record `rustc -Vv` + `Cargo.lock` provenance (Section 1.1).
+2. Create `docs/EXISTING_ASUPERSYNC_STRUCTURE.md` with exact lifecycle transition/state tables.
+3. Add Rust->C guarantee-substitution matrix with required proof artifacts per row.
+4. Create `docs/C_PORTABILITY_RULES.md` and wire UB-elimination checks into CI.
+5. Create `docs/API_ABI_STABILITY.md` plus `ASX_API_VERSION_*` macros and consumer-shim CI job.
+6. Create `docs/FEATURE_PARITY.md` with kernel rows, acceptance tests, and baseline provenance header.
+7. Create `docs/EMBEDDED_TARGET_PROFILES.md` with `R1/R2/R3` resource classes and semantic parity policy.
+8. Scaffold `include/asx` + `src` module boundaries from Section 7.
+9. Implement Phase 2.5 walking skeleton (spawn no-op task, poll ready, close region, assert quiescence).
+10. Implement `asx_status`, `asx_outcome`, `asx_budget`, `asx_cancel_reason`.
+11. Implement/test transition validators for region/task/obligation/cancellation before full runtime loop.
+12. Implement ghost monitors for protocol/linearity/determinism checks.
+13. Implement strict OOM/resource-exhaustion contract and stable failure taxonomy.
+14. Add resource ceilings + admission/backpressure APIs for memory/queue/timer nodes.
+15. Build Rust fixture-capture tooling and fixture families with provenance fields.
+16. Add conformance runner (JSON baseline + binary equivalence mode).
+17. Add cross-profile semantic digest checks (`CORE`, `FREESTANDING`, `EMBEDDED_ROUTER`, `HFT`, `AUTOMOTIVE`).
+18. Add router target cross-compile + QEMU scenario/replay runs.
+19. Add Rust↔C differential fuzzing harness + deterministic counterexample minimizer.
+20. Add compiler warning/lint gate + static analysis gate + bounded model-check gate wiring.
+21. Create `docs/HFT_PROFILE.md` with tail/jitter SLO strategy and overload semantics.
+22. Create `docs/AUTOMOTIVE_PROFILE.md` with watchdog/deadline/degraded-mode contract.
+23. Implement semantic-delta budget checker (`default=zero`) and CI enforcement.
+24. Add vertical fixture families (HFT burst, automotive deadline, crash/restart continuity) plus trend/evidence reports and adapter isomorphism artifacts.
+25. Create `docs/API_MISUSE_CATALOG.md` and convert misuse cases into profile/codec conformance fixtures.
 
 ## 17. Open Decisions Requiring Owner Confirmation
 
@@ -1341,6 +1585,12 @@ Remaining open decisions:
 - `docs/EXISTING_ASUPERSYNC_STRUCTURE.md`
 - `docs/PROPOSED_ANSI_C_ARCHITECTURE.md`
 - `docs/FEATURE_PARITY.md`
+- `docs/C_PORTABILITY_RULES.md`
+- `docs/API_ABI_STABILITY.md`
+- `docs/API_MISUSE_CATALOG.md`
+- `docs/EMBEDDED_TARGET_PROFILES.md`
+- `docs/HFT_PROFILE.md`
+- `docs/AUTOMOTIVE_PROFILE.md`
 
 This plan is intentionally strict: no implementation phase opens without spec and parity gates for that phase.
 
@@ -1416,6 +1666,16 @@ Promoted to hard gates in this revision:
 ## 19.3 Alien Architecture Multipliers (New in Rev 2)
 
 Extracted from extreme optimization and alien graveyard catalogs to replace missing Rust compile-time constraints:
+
+### 19.3.0 Research Track Rule
+
+Items in this section are hypotheses, not automatic kernel commitments.
+They become active only after:
+
+1. measured hotspot evidence,
+2. minimal prototype behind feature flag,
+3. parity/determinism artifact pack,
+4. rollback path proven in CI.
 
 16. **Formal Assurance Ladder (§0.11)**
     - Implement a structured progression from Golden Outputs -> Property Tests -> Bounded Model Checking -> Translation Validation (§6.14) to replace Rust's static borrow checker confidence without requiring a fully verified C compiler.
