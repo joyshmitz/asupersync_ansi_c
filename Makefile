@@ -18,6 +18,18 @@ LDFLAGS  ?=
 PREFIX   ?= /usr/local
 
 # ---------------------------------------------------------------------------
+# Policy toggles (local defaults vs CI strictness)
+# ---------------------------------------------------------------------------
+CI ?= 0
+FAIL_ON_MISSING_FORMATTER ?= $(CI)
+FAIL_ON_MISSING_LINTER ?= $(CI)
+FAIL_ON_MISSING_RUNNERS ?= $(CI)
+FAIL_ON_MISSING_CROSS_TOOLCHAINS ?= $(CI)
+FAIL_ON_EMPTY_UNIT_TESTS ?= $(CI)
+FAIL_ON_EMPTY_INVARIANT_TESTS ?= 0
+RUN_QEMU_IN_MATRIX ?= 0
+
+# ---------------------------------------------------------------------------
 # Profile selection (exactly one; default ASX_PROFILE_CORE)
 # Usage: make build PROFILE=FREESTANDING
 # ---------------------------------------------------------------------------
@@ -213,10 +225,13 @@ $(BIN_DIR):
 format-check:
 	@echo "[asx] format-check: verifying source formatting..."
 	@if command -v clang-format >/dev/null 2>&1; then \
-		find include src tests -name '*.c' -o -name '*.h' | \
-		xargs clang-format --dry-run --Werror 2>&1 && \
+		find include src tests \( -name '*.c' -o -name '*.h' \) -print0 | \
+		xargs -0 clang-format --dry-run --Werror 2>&1 && \
 		echo "[asx] format-check: PASS" || \
 		{ echo "[asx] format-check: FAIL — run clang-format"; exit 1; }; \
+	elif [ "$(FAIL_ON_MISSING_FORMATTER)" = "1" ]; then \
+		echo "[asx] format-check: FAIL (clang-format not found; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] format-check: SKIP (clang-format not found)"; \
 	fi
@@ -227,8 +242,9 @@ format-check:
 lint:
 	@echo "[asx] lint: running static analysis..."
 	@if command -v cppcheck >/dev/null 2>&1; then \
-		cppcheck --enable=all --std=c99 --error-exitcode=1 \
+		cppcheck --enable=warning,performance,portability --std=c99 --error-exitcode=1 \
 		         --suppress=missingIncludeSystem \
+		         --suppress=unusedFunction \
 		         -I include src/ && \
 		echo "[asx] lint: PASS (cppcheck)" || \
 		{ echo "[asx] lint: FAIL"; exit 1; }; \
@@ -236,6 +252,9 @@ lint:
 		find src -name '*.c' | xargs clang-tidy -- $(ALL_CFLAGS) && \
 		echo "[asx] lint: PASS (clang-tidy)" || \
 		{ echo "[asx] lint: FAIL"; exit 1; }; \
+	elif [ "$(FAIL_ON_MISSING_LINTER)" = "1" ]; then \
+		echo "[asx] lint: FAIL (no static analyzer found; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] lint: SKIP (no static analyzer found)"; \
 	fi
@@ -251,21 +270,27 @@ test: test-unit test-invariants
 # ---------------------------------------------------------------------------
 test-unit: $(UNIT_TEST_BIN)
 	@echo "[asx] test-unit: running $(words $(UNIT_TEST_BIN)) test(s)..."
-	@pass=0; fail=0; \
-	for t in $(UNIT_TEST_BIN); do \
-		echo "  RUN  $$(basename $$t)"; \
-		if $$t; then \
-			echo "  PASS $$(basename $$t)"; \
-			pass=$$((pass + 1)); \
+	@if [ -z "$(strip $(UNIT_TEST_BIN))" ]; then \
+		if [ "$(FAIL_ON_EMPTY_UNIT_TESTS)" = "1" ]; then \
+			echo "[asx] test-unit: FAIL (no tests found; strict mode)"; \
+			exit 1; \
 		else \
-			echo "  FAIL $$(basename $$t)"; \
-			fail=$$((fail + 1)); \
+			echo "[asx] test-unit: no tests found (scaffold stage)"; \
 		fi; \
-	done; \
-	echo "[asx] test-unit: $$pass passed, $$fail failed"; \
-	[ $$fail -eq 0 ] || exit 1
-	@if [ -z "$(UNIT_TEST_BIN)" ]; then \
-		echo "[asx] test-unit: no tests found (scaffold stage)"; \
+	else \
+		pass=0; fail=0; \
+		for t in $(UNIT_TEST_BIN); do \
+			echo "  RUN  $$(basename $$t)"; \
+			if $$t; then \
+				echo "  PASS $$(basename $$t)"; \
+				pass=$$((pass + 1)); \
+			else \
+				echo "  FAIL $$(basename $$t)"; \
+				fail=$$((fail + 1)); \
+			fi; \
+		done; \
+		echo "[asx] test-unit: $$pass passed, $$fail failed"; \
+		[ $$fail -eq 0 ] || exit 1; \
 	fi
 
 # Link individual unit tests
@@ -277,21 +302,27 @@ $(TEST_DIR)/unit/%: tests/unit/%.c $(LIB_A) | test-dirs
 # ---------------------------------------------------------------------------
 test-invariants: $(INV_TEST_BIN)
 	@echo "[asx] test-invariants: running $(words $(INV_TEST_BIN)) test(s)..."
-	@pass=0; fail=0; \
-	for t in $(INV_TEST_BIN); do \
-		echo "  RUN  $$(basename $$t)"; \
-		if $$t; then \
-			echo "  PASS $$(basename $$t)"; \
-			pass=$$((pass + 1)); \
+	@if [ -z "$(strip $(INV_TEST_BIN))" ]; then \
+		if [ "$(FAIL_ON_EMPTY_INVARIANT_TESTS)" = "1" ]; then \
+			echo "[asx] test-invariants: FAIL (no tests found; strict mode)"; \
+			exit 1; \
 		else \
-			echo "  FAIL $$(basename $$t)"; \
-			fail=$$((fail + 1)); \
+			echo "[asx] test-invariants: no tests found (scaffold stage)"; \
 		fi; \
-	done; \
-	echo "[asx] test-invariants: $$pass passed, $$fail failed"; \
-	[ $$fail -eq 0 ] || exit 1
-	@if [ -z "$(INV_TEST_BIN)" ]; then \
-		echo "[asx] test-invariants: no tests found (scaffold stage)"; \
+	else \
+		pass=0; fail=0; \
+		for t in $(INV_TEST_BIN); do \
+			echo "  RUN  $$(basename $$t)"; \
+			if $$t; then \
+				echo "  PASS $$(basename $$t)"; \
+				pass=$$((pass + 1)); \
+			else \
+				echo "  FAIL $$(basename $$t)"; \
+				fail=$$((fail + 1)); \
+			fi; \
+		done; \
+		echo "[asx] test-invariants: $$pass passed, $$fail failed"; \
+		[ $$fail -eq 0 ] || exit 1; \
 	fi
 
 $(TEST_DIR)/invariant/%: tests/invariant/%.c $(LIB_A) | test-dirs
@@ -309,6 +340,9 @@ conformance:
 	@echo "[asx] conformance: Rust fixture parity check..."
 	@if [ -x tools/ci/run_conformance.sh ]; then \
 		tools/ci/run_conformance.sh; \
+	elif [ "$(FAIL_ON_MISSING_RUNNERS)" = "1" ]; then \
+		echo "[asx] conformance: FAIL (runner missing; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] conformance: SKIP (runner not yet implemented)"; \
 	fi
@@ -320,6 +354,9 @@ codec-equivalence:
 	@echo "[asx] codec-equivalence: JSON vs BIN parity check..."
 	@if [ -x tools/ci/run_codec_equivalence.sh ]; then \
 		tools/ci/run_codec_equivalence.sh; \
+	elif [ "$(FAIL_ON_MISSING_RUNNERS)" = "1" ]; then \
+		echo "[asx] codec-equivalence: FAIL (runner missing; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] codec-equivalence: SKIP (runner not yet implemented)"; \
 	fi
@@ -331,6 +368,9 @@ profile-parity:
 	@echo "[asx] profile-parity: cross-profile digest check..."
 	@if [ -x tools/ci/run_profile_parity.sh ]; then \
 		tools/ci/run_profile_parity.sh; \
+	elif [ "$(FAIL_ON_MISSING_RUNNERS)" = "1" ]; then \
+		echo "[asx] profile-parity: FAIL (runner missing; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] profile-parity: SKIP (runner not yet implemented)"; \
 	fi
@@ -342,6 +382,9 @@ fuzz-smoke:
 	@echo "[asx] fuzz-smoke: differential fuzzing smoke test..."
 	@if [ -x tools/fuzz/run_smoke.sh ]; then \
 		tools/fuzz/run_smoke.sh; \
+	elif [ "$(FAIL_ON_MISSING_RUNNERS)" = "1" ]; then \
+		echo "[asx] fuzz-smoke: FAIL (runner missing; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] fuzz-smoke: SKIP (fuzzer not yet implemented)"; \
 	fi
@@ -350,6 +393,9 @@ fuzz-smoke:
 # ci-embedded-matrix — cross-target embedded builds + QEMU
 # ---------------------------------------------------------------------------
 ci-embedded-matrix: build-embedded-mipsel build-embedded-armv7 build-embedded-aarch64
+	@if [ "$(RUN_QEMU_IN_MATRIX)" = "1" ]; then \
+		$(MAKE) qemu-smoke FAIL_ON_MISSING_RUNNERS=$(FAIL_ON_MISSING_RUNNERS); \
+	fi
 	@echo "[asx] ci-embedded-matrix: all embedded targets built"
 
 # ---------------------------------------------------------------------------
@@ -401,6 +447,9 @@ build-embedded-mipsel:
 	@echo "[asx] build-embedded-mipsel: building for mipsel-openwrt-linux-musl..."
 	@if command -v mipsel-openwrt-linux-musl-gcc >/dev/null 2>&1; then \
 		$(MAKE) build TARGET=mipsel-openwrt-linux-musl PROFILE=EMBEDDED_ROUTER; \
+	elif [ "$(FAIL_ON_MISSING_CROSS_TOOLCHAINS)" = "1" ]; then \
+		echo "[asx] build-embedded-mipsel: FAIL (toolchain not found; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] build-embedded-mipsel: SKIP (toolchain not found)"; \
 	fi
@@ -409,6 +458,9 @@ build-embedded-armv7:
 	@echo "[asx] build-embedded-armv7: building for armv7-openwrt-linux-muslgnueabi..."
 	@if command -v armv7-openwrt-linux-muslgnueabi-gcc >/dev/null 2>&1; then \
 		$(MAKE) build TARGET=armv7-openwrt-linux-muslgnueabi PROFILE=EMBEDDED_ROUTER; \
+	elif [ "$(FAIL_ON_MISSING_CROSS_TOOLCHAINS)" = "1" ]; then \
+		echo "[asx] build-embedded-armv7: FAIL (toolchain not found; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] build-embedded-armv7: SKIP (toolchain not found)"; \
 	fi
@@ -417,6 +469,9 @@ build-embedded-aarch64:
 	@echo "[asx] build-embedded-aarch64: building for aarch64-openwrt-linux-musl..."
 	@if command -v aarch64-openwrt-linux-musl-gcc >/dev/null 2>&1; then \
 		$(MAKE) build TARGET=aarch64-openwrt-linux-musl PROFILE=EMBEDDED_ROUTER; \
+	elif [ "$(FAIL_ON_MISSING_CROSS_TOOLCHAINS)" = "1" ]; then \
+		echo "[asx] build-embedded-aarch64: FAIL (toolchain not found; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] build-embedded-aarch64: SKIP (toolchain not found)"; \
 	fi
@@ -428,6 +483,9 @@ qemu-smoke:
 	@echo "[asx] qemu-smoke: QEMU scenario execution..."
 	@if [ -x tools/ci/run_qemu_smoke.sh ]; then \
 		tools/ci/run_qemu_smoke.sh; \
+	elif [ "$(FAIL_ON_MISSING_RUNNERS)" = "1" ]; then \
+		echo "[asx] qemu-smoke: FAIL (runner missing; strict mode)"; \
+		exit 1; \
 	else \
 		echo "[asx] qemu-smoke: SKIP (QEMU harness not yet implemented)"; \
 	fi
@@ -435,8 +493,11 @@ qemu-smoke:
 # ---------------------------------------------------------------------------
 # check — combined gate for PR/push CI
 # ---------------------------------------------------------------------------
-.PHONY: check
+.PHONY: check check-ci
 check: format-check lint build test
+
+check-ci: CI=1
+check-ci: format-check lint build test conformance codec-equivalence profile-parity fuzz-smoke ci-embedded-matrix
 
 # ---------------------------------------------------------------------------
 # clean

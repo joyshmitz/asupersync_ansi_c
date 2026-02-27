@@ -4,8 +4,9 @@
  * SPDX-License-Identifier: MIT
  */
 
+/* Always provide at least one definition to avoid empty TU */
+typedef int asx_freestanding_hooks_stub;
+
 #ifdef ASX_PROFILE_FREESTANDING
 /* Stub: freestanding hooks pending */
-#else
-typedef int asx_no_empty_tu_warning;
 #endif

@@ -25,6 +25,22 @@ set(ASX_CODEC "JSON" CACHE STRING "Codec: JSON, BIN")
 option(ASX_DETERMINISTIC "Enable deterministic scheduling mode" ON)
 option(ASX_BUILD_TESTS "Build test executables" ON)
 
+message(STATUS "asx: Makefile is authoritative; CMake is an optional integration bridge.")
+
+set(ASX_ALLOWED_PROFILES CORE POSIX WIN32 FREESTANDING EMBEDDED_ROUTER HFT AUTOMOTIVE)
+list(FIND ASX_ALLOWED_PROFILES "${ASX_PROFILE}" ASX_PROFILE_INDEX)
+if(ASX_PROFILE_INDEX EQUAL -1)
+    message(FATAL_ERROR
+        "Invalid ASX_PROFILE='${ASX_PROFILE}'. Allowed values: ${ASX_ALLOWED_PROFILES}")
+endif()
+
+set(ASX_ALLOWED_CODECS JSON BIN)
+list(FIND ASX_ALLOWED_CODECS "${ASX_CODEC}" ASX_CODEC_INDEX)
+if(ASX_CODEC_INDEX EQUAL -1)
+    message(FATAL_ERROR
+        "Invalid ASX_CODEC='${ASX_CODEC}'. Allowed values: ${ASX_ALLOWED_CODECS}")
+endif()
+
 # ---------------------------------------------------------------------------
 # Compiler warnings (warnings-as-errors for core/kernel)
 # ---------------------------------------------------------------------------
@@ -58,11 +74,27 @@ endif()
 # ---------------------------------------------------------------------------
 set(ASX_CORE_SRC
     src/core/status.c
+    src/core/transition_tables.c
+    src/core/outcome.c
+    src/core/budget.c
+    src/core/cancel.c
 )
 
-set(ASX_RUNTIME_SRC)
-set(ASX_CHANNEL_SRC)
-set(ASX_TIME_SRC)
+set(ASX_RUNTIME_SRC
+    src/runtime/lifecycle.c
+    src/runtime/scheduler.c
+    src/runtime/cancellation.c
+    src/runtime/quiescence.c
+)
+
+set(ASX_CHANNEL_SRC
+    src/channel/mpsc.c
+)
+
+set(ASX_TIME_SRC
+    src/time/timer_wheel.c
+)
+
 set(ASX_PLATFORM_SRC)
 
 # Select platform sources by profile
@@ -94,7 +126,11 @@ if(ASX_BUILD_TESTS)
     enable_testing()
 
     # Unit tests
-    file(GLOB_RECURSE UNIT_TESTS tests/unit/**/*_test.c)
+    file(GLOB_RECURSE UNIT_TESTS CONFIGURE_DEPENDS
+        tests/unit/**/*_test.c
+        tests/unit/**/test_*.c
+    )
+    list(REMOVE_DUPLICATES UNIT_TESTS)
     foreach(TEST_SRC ${UNIT_TESTS})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -106,7 +142,11 @@ if(ASX_BUILD_TESTS)
     endforeach()
 
     # Invariant tests
-    file(GLOB_RECURSE INV_TESTS tests/invariant/**/*_test.c)
+    file(GLOB_RECURSE INV_TESTS CONFIGURE_DEPENDS
+        tests/invariant/**/*_test.c
+        tests/invariant/**/test_*.c
+    )
+    list(REMOVE_DUPLICATES INV_TESTS)
     foreach(TEST_SRC ${INV_TESTS})
         get_filename_component(TEST_NAME ${TEST_SRC} NAME_WE)
         add_executable(${TEST_NAME} ${TEST_SRC})
@@ -116,6 +156,39 @@ if(ASX_BUILD_TESTS)
         )
         add_test(NAME ${TEST_NAME} COMMAND ${TEST_NAME})
     endforeach()
+endif()
+
+# ---------------------------------------------------------------------------
+# Delegate advanced quality gates to the authoritative Makefile.
+# ---------------------------------------------------------------------------
+find_program(ASX_MAKE_EXECUTABLE NAMES gmake make)
+if(ASX_MAKE_EXECUTABLE)
+    add_custom_target(gate-conformance
+        COMMAND ${ASX_MAKE_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR} conformance
+        USES_TERMINAL
+        COMMENT "Delegating conformance gate to Makefile")
+
+    add_custom_target(gate-codec-equivalence
+        COMMAND ${ASX_MAKE_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR} codec-equivalence
+        USES_TERMINAL
+        COMMENT "Delegating codec-equivalence gate to Makefile")
+
+    add_custom_target(gate-profile-parity
+        COMMAND ${ASX_MAKE_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR} profile-parity
+        USES_TERMINAL
+        COMMENT "Delegating profile-parity gate to Makefile")
+
+    add_custom_target(gate-fuzz-smoke
+        COMMAND ${ASX_MAKE_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR} fuzz-smoke
+        USES_TERMINAL
+        COMMENT "Delegating fuzz-smoke gate to Makefile")
+
+    add_custom_target(gate-ci-embedded-matrix
+        COMMAND ${ASX_MAKE_EXECUTABLE} -C ${CMAKE_CURRENT_SOURCE_DIR} ci-embedded-matrix
+        USES_TERMINAL
+        COMMENT "Delegating embedded matrix gate to Makefile")
+else()
+    message(WARNING "asx: make executable not found; gate-* delegation targets disabled.")
 endif()
 
 # ---------------------------------------------------------------------------
