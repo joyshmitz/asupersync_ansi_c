@@ -85,6 +85,70 @@ TEST(budget_deadline) {
     ASSERT_FALSE(asx_budget_is_past_deadline(&b, 999));
 }
 
+TEST(budget_meet_associative) {
+    /* (a ∩ b) ∩ c == a ∩ (b ∩ c) */
+    asx_budget a = {100, 50, 1000, 128};
+    asx_budget b = {200, 30, 2000, 64};
+    asx_budget c = {150, 40, 500, 100};
+    asx_budget ab  = asx_budget_meet(&a, &b);
+    asx_budget lhs = asx_budget_meet(&ab, &c);
+    asx_budget bc  = asx_budget_meet(&b, &c);
+    asx_budget rhs = asx_budget_meet(&a, &bc);
+    ASSERT_EQ(lhs.deadline, rhs.deadline);
+    ASSERT_EQ(lhs.poll_quota, rhs.poll_quota);
+    ASSERT_EQ(lhs.cost_quota, rhs.cost_quota);
+    ASSERT_EQ(lhs.priority, rhs.priority);
+}
+
+TEST(budget_meet_idempotent) {
+    /* a ∩ a == a */
+    asx_budget a = {100, 50, 1000, 128};
+    asx_budget result = asx_budget_meet(&a, &a);
+    ASSERT_EQ(result.deadline, a.deadline);
+    ASSERT_EQ(result.poll_quota, a.poll_quota);
+    ASSERT_EQ(result.cost_quota, a.cost_quota);
+    ASSERT_EQ(result.priority, a.priority);
+}
+
+TEST(budget_infinite_fields) {
+    asx_budget inf = asx_budget_infinite();
+    ASSERT_EQ(inf.deadline, (asx_time)0);
+    ASSERT_EQ(inf.poll_quota, UINT32_MAX);
+    ASSERT_EQ(inf.cost_quota, UINT64_MAX);
+    ASSERT_EQ(inf.priority, (uint8_t)255);
+    ASSERT_FALSE(asx_budget_is_exhausted(&inf));
+}
+
+TEST(budget_zero_fields) {
+    asx_budget zero = asx_budget_zero();
+    ASSERT_EQ(zero.poll_quota, (uint32_t)0);
+    ASSERT_EQ(zero.cost_quota, (uint64_t)0);
+    ASSERT_EQ(zero.priority, (uint8_t)0);
+    ASSERT_TRUE(asx_budget_is_exhausted(&zero));
+}
+
+TEST(budget_consume_cost_zero) {
+    /* Consuming 0 cost should always succeed */
+    asx_budget b = {0, 100, 50, 128};
+    ASSERT_TRUE(asx_budget_consume_cost(&b, 0));
+    ASSERT_EQ(b.cost_quota, (uint64_t)50);
+}
+
+TEST(budget_consume_cost_exact_boundary) {
+    /* Consume exactly what remains */
+    asx_budget b = {0, 100, 1, 128};
+    ASSERT_TRUE(asx_budget_consume_cost(&b, 1));
+    ASSERT_EQ(b.cost_quota, (uint64_t)0);
+    ASSERT_TRUE(asx_budget_is_exhausted(&b));
+}
+
+TEST(budget_deadline_max) {
+    /* UINT64_MAX deadline */
+    asx_budget b = {UINT64_MAX, 50, 1000, 128};
+    ASSERT_FALSE(asx_budget_is_past_deadline(&b, 0));
+    ASSERT_TRUE(asx_budget_is_past_deadline(&b, UINT64_MAX));
+}
+
 int main(void) {
     fprintf(stderr, "=== test_budget ===\n");
     RUN_TEST(budget_infinite_is_identity);
@@ -95,6 +159,13 @@ int main(void) {
     RUN_TEST(budget_consume_cost);
     RUN_TEST(budget_exhaustion);
     RUN_TEST(budget_deadline);
+    RUN_TEST(budget_meet_associative);
+    RUN_TEST(budget_meet_idempotent);
+    RUN_TEST(budget_infinite_fields);
+    RUN_TEST(budget_zero_fields);
+    RUN_TEST(budget_consume_cost_zero);
+    RUN_TEST(budget_consume_cost_exact_boundary);
+    RUN_TEST(budget_deadline_max);
     TEST_REPORT();
     return test_failures;
 }

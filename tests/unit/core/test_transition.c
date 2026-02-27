@@ -96,6 +96,76 @@ TEST(obligation_terminal_absorbing) {
     ASSERT_EQ(asx_obligation_transition_check(ASX_OBLIGATION_LEAKED, ASX_OBLIGATION_COMMITTED), ASX_E_INVALID_TRANSITION);
 }
 
+/* State string functions */
+TEST(region_state_str_all) {
+    ASSERT_STR_EQ(asx_region_state_str(ASX_REGION_OPEN), "Open");
+    ASSERT_STR_EQ(asx_region_state_str(ASX_REGION_CLOSING), "Closing");
+    ASSERT_STR_EQ(asx_region_state_str(ASX_REGION_DRAINING), "Draining");
+    ASSERT_STR_EQ(asx_region_state_str(ASX_REGION_FINALIZING), "Finalizing");
+    ASSERT_STR_EQ(asx_region_state_str(ASX_REGION_CLOSED), "Closed");
+}
+
+TEST(region_state_str_out_of_range) {
+    ASSERT_STR_EQ(asx_region_state_str((asx_region_state)99), "Unknown");
+}
+
+TEST(task_state_str_all) {
+    ASSERT_STR_EQ(asx_task_state_str(ASX_TASK_CREATED), "Created");
+    ASSERT_STR_EQ(asx_task_state_str(ASX_TASK_RUNNING), "Running");
+    ASSERT_STR_EQ(asx_task_state_str(ASX_TASK_CANCEL_REQUESTED), "CancelRequested");
+    ASSERT_STR_EQ(asx_task_state_str(ASX_TASK_CANCELLING), "Cancelling");
+    ASSERT_STR_EQ(asx_task_state_str(ASX_TASK_FINALIZING), "Finalizing");
+    ASSERT_STR_EQ(asx_task_state_str(ASX_TASK_COMPLETED), "Completed");
+}
+
+TEST(task_state_str_out_of_range) {
+    ASSERT_STR_EQ(asx_task_state_str((asx_task_state)99), "Unknown");
+}
+
+TEST(obligation_state_str_all) {
+    ASSERT_STR_EQ(asx_obligation_state_str(ASX_OBLIGATION_RESERVED), "Reserved");
+    ASSERT_STR_EQ(asx_obligation_state_str(ASX_OBLIGATION_COMMITTED), "Committed");
+    ASSERT_STR_EQ(asx_obligation_state_str(ASX_OBLIGATION_ABORTED), "Aborted");
+    ASSERT_STR_EQ(asx_obligation_state_str(ASX_OBLIGATION_LEAKED), "Leaked");
+}
+
+TEST(obligation_state_str_out_of_range) {
+    ASSERT_STR_EQ(asx_obligation_state_str((asx_obligation_state)99), "Unknown");
+}
+
+/* Out-of-range transition checks */
+TEST(region_transition_out_of_range) {
+    ASSERT_EQ(asx_region_transition_check((asx_region_state)99, ASX_REGION_OPEN), ASX_E_INVALID_ARGUMENT);
+    ASSERT_EQ(asx_region_transition_check(ASX_REGION_OPEN, (asx_region_state)99), ASX_E_INVALID_ARGUMENT);
+}
+
+TEST(task_transition_out_of_range) {
+    ASSERT_EQ(asx_task_transition_check((asx_task_state)99, ASX_TASK_CREATED), ASX_E_INVALID_ARGUMENT);
+    ASSERT_EQ(asx_task_transition_check(ASX_TASK_CREATED, (asx_task_state)99), ASX_E_INVALID_ARGUMENT);
+}
+
+TEST(obligation_transition_out_of_range) {
+    ASSERT_EQ(asx_obligation_transition_check((asx_obligation_state)99, ASX_OBLIGATION_RESERVED), ASX_E_INVALID_ARGUMENT);
+    ASSERT_EQ(asx_obligation_transition_check(ASX_OBLIGATION_RESERVED, (asx_obligation_state)99), ASX_E_INVALID_ARGUMENT);
+}
+
+/* Terminal predicates (exhaustive) */
+TEST(task_terminal_predicates) {
+    ASSERT_FALSE(asx_task_is_terminal(ASX_TASK_CREATED));
+    ASSERT_FALSE(asx_task_is_terminal(ASX_TASK_RUNNING));
+    ASSERT_FALSE(asx_task_is_terminal(ASX_TASK_CANCEL_REQUESTED));
+    ASSERT_FALSE(asx_task_is_terminal(ASX_TASK_CANCELLING));
+    ASSERT_FALSE(asx_task_is_terminal(ASX_TASK_FINALIZING));
+    ASSERT_TRUE(asx_task_is_terminal(ASX_TASK_COMPLETED));
+}
+
+TEST(obligation_terminal_predicates) {
+    ASSERT_FALSE(asx_obligation_is_terminal(ASX_OBLIGATION_RESERVED));
+    ASSERT_TRUE(asx_obligation_is_terminal(ASX_OBLIGATION_COMMITTED));
+    ASSERT_TRUE(asx_obligation_is_terminal(ASX_OBLIGATION_ABORTED));
+    ASSERT_TRUE(asx_obligation_is_terminal(ASX_OBLIGATION_LEAKED));
+}
+
 int main(void) {
     fprintf(stderr, "=== test_transition ===\n");
     RUN_TEST(region_legal_forward);
@@ -109,6 +179,17 @@ int main(void) {
     RUN_TEST(task_completed_absorbing);
     RUN_TEST(obligation_legal);
     RUN_TEST(obligation_terminal_absorbing);
+    RUN_TEST(region_state_str_all);
+    RUN_TEST(region_state_str_out_of_range);
+    RUN_TEST(task_state_str_all);
+    RUN_TEST(task_state_str_out_of_range);
+    RUN_TEST(obligation_state_str_all);
+    RUN_TEST(obligation_state_str_out_of_range);
+    RUN_TEST(region_transition_out_of_range);
+    RUN_TEST(task_transition_out_of_range);
+    RUN_TEST(obligation_transition_out_of_range);
+    RUN_TEST(task_terminal_predicates);
+    RUN_TEST(obligation_terminal_predicates);
     TEST_REPORT();
     return test_failures;
 }

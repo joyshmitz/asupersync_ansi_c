@@ -101,6 +101,21 @@ TEST(cancel_strengthen_equal_severity_earlier_wins) {
     ASSERT_EQ(result.timestamp, (asx_time)100);
 }
 
+TEST(cancel_severity_out_of_range_clamps) {
+    /* Values beyond ASX_CANCEL_SHUTDOWN (10) should return max severity (5) */
+    ASSERT_EQ(asx_cancel_severity((asx_cancel_kind)11), (int)5);
+    ASSERT_EQ(asx_cancel_severity((asx_cancel_kind)100), (int)5);
+    ASSERT_EQ(asx_cancel_severity((asx_cancel_kind)255), (int)5);
+}
+
+TEST(cancel_strengthen_equal_severity_same_timestamp) {
+    /* Equal severity, equal timestamp: first argument wins (left-bias) */
+    asx_cancel_reason a = {ASX_CANCEL_TIMEOUT, 0, 0, 100, "a", NULL, 0};
+    asx_cancel_reason b = {ASX_CANCEL_DEADLINE, 0, 0, 100, "b", NULL, 0};
+    asx_cancel_reason result = asx_cancel_strengthen(&a, &b);
+    ASSERT_EQ(result.kind, ASX_CANCEL_TIMEOUT);
+}
+
 int main(void) {
     fprintf(stderr, "=== test_cancel ===\n");
     RUN_TEST(cancel_severity_user);
@@ -113,6 +128,8 @@ int main(void) {
     RUN_TEST(cancel_strengthen_higher_severity_wins);
     RUN_TEST(cancel_strengthen_commutative_for_different_severity);
     RUN_TEST(cancel_strengthen_equal_severity_earlier_wins);
+    RUN_TEST(cancel_severity_out_of_range_clamps);
+    RUN_TEST(cancel_strengthen_equal_severity_same_timestamp);
     TEST_REPORT();
     return test_failures;
 }
