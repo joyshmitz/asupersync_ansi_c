@@ -34,9 +34,30 @@ static void default_free(void *ctx, void *ptr) {
     free(ptr);
 }
 
-static void default_log_write(void *ctx, int level, const char *message) {
+static asx_time default_logical_clock(void *ctx) {
     (void)ctx;
-    fprintf(stderr, "[asx:%d] %s\n", level, message);
+    return 0; /* logical clock starts at 0, advanced by runtime */
+}
+
+static asx_time default_wall_clock(void *ctx) {
+    (void)ctx;
+    return 0; /* stub: real platforms override this */
+}
+
+static uint64_t default_seeded_entropy(void *ctx) {
+    /* Deterministic PRNG: simple counter-based default.
+     * Real deployments should provide a proper seeded PRNG. */
+    static uint64_t state = 0x5DEECE66DULL;
+    (void)ctx;
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    return state;
+}
+
+static asx_status default_ghost_reactor_wait(void *ctx, uint64_t logical_step,
+                                              uint32_t *ready_count) {
+    (void)ctx; (void)logical_step;
+    *ready_count = 0; /* no events in stub ghost reactor */
+    return ASX_OK;
 }
 
 /* ------------------------------------------------------------------ */
@@ -59,13 +80,15 @@ asx_status asx_runtime_hooks_init(asx_runtime_hooks *hooks) {
     hooks->allocator.realloc_fn = default_realloc;
     hooks->allocator.free_fn    = default_free;
 
-    /* Default log: stderr */
-    hooks->log.write_fn = default_log_write;
+    /* Log sink is opt-in (NULL by default) */
 
-    /* Clock, entropy, reactor: left as NULL — must be set by user
-     * or validated before use. */
+    /* Deterministic-safe defaults: logical clock, seeded PRNG, ghost reactor */
+    hooks->clock.now_ns_fn         = default_wall_clock;
+    hooks->clock.logical_now_ns_fn = default_logical_clock;
+    hooks->entropy.random_u64_fn   = default_seeded_entropy;
+    hooks->reactor.ghost_wait_fn   = default_ghost_reactor_wait;
 
-    hooks->deterministic_seeded_prng = 0;
+    hooks->deterministic_seeded_prng = 1;
     hooks->allocator_sealed = 0;
 
     return ASX_OK;
@@ -86,19 +109,19 @@ asx_status asx_runtime_hooks_validate(const asx_runtime_hooks *hooks,
     if (deterministic_mode) {
         /* Deterministic mode requires a logical clock */
         if (!hooks->clock.logical_now_ns_fn)
-            return ASX_E_INVALID_STATE;
+            return ASX_E_DETERMINISM_VIOLATION;
 
         /* Deterministic mode forbids ambient entropy unless seeded PRNG is configured */
         if (hooks->entropy.random_u64_fn && !hooks->deterministic_seeded_prng)
-            return ASX_E_INVALID_STATE;
+            return ASX_E_DETERMINISM_VIOLATION;
 
         /* Ghost reactor required if reactor is configured in deterministic mode */
         if (hooks->reactor.wait_fn && !hooks->reactor.ghost_wait_fn)
-            return ASX_E_INVALID_STATE;
+            return ASX_E_DETERMINISM_VIOLATION;
     } else {
         /* Live mode needs a real clock */
         if (!hooks->clock.now_ns_fn)
-            return ASX_E_INVALID_STATE;
+            return ASX_E_INVALID_ARGUMENT;
     }
 
     return ASX_OK;
@@ -126,7 +149,7 @@ const asx_runtime_hooks *asx_runtime_get_hooks(void) {
 
 asx_status asx_runtime_seal_allocator(void) {
     if (!g_hooks_installed) return ASX_E_INVALID_STATE;
-    if (g_hooks.allocator_sealed) return ASX_OK; /* idempotent */
+    if (g_hooks.allocator_sealed) return ASX_E_INVALID_STATE; /* already sealed */
     g_hooks.allocator_sealed = 1;
     return ASX_OK;
 }
@@ -139,7 +162,7 @@ asx_status asx_runtime_alloc(size_t size, void **out_ptr) {
     void *p;
     if (!out_ptr) return ASX_E_INVALID_ARGUMENT;
     if (!g_hooks_installed) return ASX_E_INVALID_STATE;
-    if (g_hooks.allocator_sealed) return ASX_E_RESOURCE_EXHAUSTED;
+    if (g_hooks.allocator_sealed) return ASX_E_ALLOCATOR_SEALED;
     if (!g_hooks.allocator.malloc_fn) return ASX_E_INVALID_STATE;
 
     p = g_hooks.allocator.malloc_fn(g_hooks.allocator.ctx, size);
@@ -152,7 +175,7 @@ asx_status asx_runtime_realloc(void *ptr, size_t size, void **out_ptr) {
     void *p;
     if (!out_ptr) return ASX_E_INVALID_ARGUMENT;
     if (!g_hooks_installed) return ASX_E_INVALID_STATE;
-    if (g_hooks.allocator_sealed) return ASX_E_RESOURCE_EXHAUSTED;
+    if (g_hooks.allocator_sealed) return ASX_E_ALLOCATOR_SEALED;
     if (!g_hooks.allocator.realloc_fn) return ASX_E_INVALID_STATE;
 
     p = g_hooks.allocator.realloc_fn(g_hooks.allocator.ctx, ptr, size);

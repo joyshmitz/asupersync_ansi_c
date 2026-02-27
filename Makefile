@@ -115,6 +115,7 @@ CORE_SRC := \
 	src/core/cancel.c
 
 RUNTIME_SRC := \
+	src/runtime/hooks.c \
 	src/runtime/lifecycle.c \
 	src/runtime/scheduler.c \
 	src/runtime/cancellation.c \

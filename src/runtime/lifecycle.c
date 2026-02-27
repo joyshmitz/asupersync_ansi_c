@@ -91,13 +91,25 @@ asx_status asx_region_open(asx_region_id *out_id)
     uint32_t idx;
 
     if (out_id == NULL) return ASX_E_INVALID_ARGUMENT;
-    if (g_region_count >= ASX_MAX_REGIONS) return ASX_E_RESOURCE_EXHAUSTED;
 
-    idx = g_region_count++;
+    /* Scan for a recyclable slot: unused (alive=0) or CLOSED with no tasks */
+    for (idx = 0; idx < ASX_MAX_REGIONS; idx++) {
+        if (!g_regions[idx].alive) break;
+        if (g_regions[idx].state == ASX_REGION_CLOSED
+            && g_regions[idx].task_count == 0) {
+            break;
+        }
+    }
+    if (idx >= ASX_MAX_REGIONS) return ASX_E_RESOURCE_EXHAUSTED;
+
     g_regions[idx].state      = ASX_REGION_OPEN;
     g_regions[idx].task_count = 0;
     g_regions[idx].task_total = 0;
     g_regions[idx].alive      = 1;
+
+    if (idx >= g_region_count) {
+        g_region_count = idx + 1;
+    }
 
     *out_id = asx_handle_pack(ASX_TYPE_REGION,
                               (uint16_t)(1u << (unsigned)ASX_REGION_OPEN),

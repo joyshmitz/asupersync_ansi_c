@@ -70,14 +70,16 @@ TEST(hooks_init_defaults) {
     /* Default allocator must be set */
     ASSERT_TRUE(hooks.allocator.malloc_fn != NULL);
     ASSERT_TRUE(hooks.allocator.free_fn != NULL);
-    /* Default log must be set */
-    ASSERT_TRUE(hooks.log.write_fn != NULL);
-    /* Clock/entropy/reactor not set by default */
-    ASSERT_TRUE(hooks.clock.now_ns_fn == NULL);
-    ASSERT_TRUE(hooks.entropy.random_u64_fn == NULL);
+    /* Log sink is opt-in */
+    ASSERT_TRUE(hooks.log.write_fn == NULL);
+    /* Deterministic-safe defaults are installed */
+    ASSERT_TRUE(hooks.clock.now_ns_fn != NULL);
+    ASSERT_TRUE(hooks.clock.logical_now_ns_fn != NULL);
+    ASSERT_TRUE(hooks.entropy.random_u64_fn != NULL);
     ASSERT_TRUE(hooks.reactor.wait_fn == NULL);
+    ASSERT_TRUE(hooks.reactor.ghost_wait_fn != NULL);
     /* Flags clear */
-    ASSERT_EQ(hooks.deterministic_seeded_prng, (uint8_t)0);
+    ASSERT_EQ(hooks.deterministic_seeded_prng, (uint8_t)1);
     ASSERT_EQ(hooks.allocator_sealed, (uint8_t)0);
 }
 
@@ -88,8 +90,10 @@ TEST(hooks_init_null_rejected) {
 TEST(hooks_validate_live_needs_clock) {
     asx_runtime_hooks hooks;
     asx_runtime_hooks_init(&hooks);
-    /* No clock set → validation fails for live mode */
-    ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 0), ASX_E_INVALID_STATE);
+    /* No clock set -> validation fails for live mode */
+    hooks.clock.now_ns_fn = NULL;
+    hooks.clock.logical_now_ns_fn = NULL;
+    ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 0), ASX_E_INVALID_ARGUMENT);
     /* Set clock → passes */
     hooks.clock.now_ns_fn = test_clock;
     ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 0), ASX_OK);
@@ -98,9 +102,9 @@ TEST(hooks_validate_live_needs_clock) {
 TEST(hooks_validate_deterministic_needs_logical_clock) {
     asx_runtime_hooks hooks;
     asx_runtime_hooks_init(&hooks);
-    /* Only wall clock set → fails in deterministic mode */
-    hooks.clock.now_ns_fn = test_clock;
-    ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 1), ASX_E_INVALID_STATE);
+    /* Missing logical clock -> fails in deterministic mode */
+    hooks.clock.logical_now_ns_fn = NULL;
+    ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 1), ASX_E_DETERMINISM_VIOLATION);
     /* Set logical clock → passes */
     hooks.clock.logical_now_ns_fn = test_logical_clock;
     ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 1), ASX_OK);
@@ -113,7 +117,7 @@ TEST(hooks_validate_deterministic_forbids_ambient_entropy) {
     /* Entropy without seeded PRNG flag → rejected */
     hooks.entropy.random_u64_fn = test_entropy;
     hooks.deterministic_seeded_prng = 0;
-    ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 1), ASX_E_INVALID_STATE);
+    ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 1), ASX_E_DETERMINISM_VIOLATION);
     /* Set seeded PRNG flag → passes */
     hooks.deterministic_seeded_prng = 1;
     ASSERT_EQ(asx_runtime_hooks_validate(&hooks, 1), ASX_OK);
@@ -178,21 +182,23 @@ TEST(hooks_allocator_seal) {
     ASSERT_EQ(asx_runtime_seal_allocator(), ASX_OK);
 
     /* Alloc rejected after seal */
-    ASSERT_EQ(asx_runtime_alloc(32, &ptr), ASX_E_RESOURCE_EXHAUSTED);
+    ASSERT_EQ(asx_runtime_alloc(32, &ptr), ASX_E_ALLOCATOR_SEALED);
 
-    /* Seal is idempotent */
-    ASSERT_EQ(asx_runtime_seal_allocator(), ASX_OK);
+    /* Second seal is rejected */
+    ASSERT_EQ(asx_runtime_seal_allocator(), ASX_E_INVALID_STATE);
 }
 
 TEST(hooks_clock_dispatch) {
     asx_runtime_hooks hooks;
     asx_time now = 0;
+    fake_time = 7777;
     asx_runtime_hooks_init(&hooks);
     hooks.clock.now_ns_fn = test_clock;
+    hooks.clock.logical_now_ns_fn = test_logical_clock;
     asx_runtime_set_hooks(&hooks);
 
     ASSERT_EQ(asx_runtime_now_ns(&now), ASX_OK);
-    ASSERT_EQ(now, (asx_time)1000000000ULL);
+    ASSERT_EQ(now, (asx_time)fake_time);
 }
 
 TEST(hooks_log_dispatch) {
@@ -226,10 +232,11 @@ TEST(hooks_entropy_forbidden_without_prng) {
     asx_runtime_hooks_init(&hooks);
     hooks.clock.now_ns_fn = test_clock;
     hooks.clock.logical_now_ns_fn = test_logical_clock;
-    /* No entropy hook installed */
+    hooks.entropy.random_u64_fn = NULL;
+    hooks.deterministic_seeded_prng = 1;
     asx_runtime_set_hooks(&hooks);
 
-    /* Should fail: no entropy function */
+    /* Should fail: entropy function not installed */
     ASSERT_EQ(asx_runtime_random_u64(&val), ASX_E_INVALID_STATE);
 }
 
