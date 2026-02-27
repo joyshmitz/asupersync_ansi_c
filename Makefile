@@ -11,7 +11,7 @@
 # ---------------------------------------------------------------------------
 # Toolchain defaults (override via environment or command line)
 # ---------------------------------------------------------------------------
-CC       ?= cc
+CC       ?= gcc
 AR       ?= ar
 CFLAGS   ?=
 LDFLAGS  ?=
@@ -145,12 +145,20 @@ LIB_A   := $(LIB_DIR)/libasx.a
 # Test sources
 # ---------------------------------------------------------------------------
 UNIT_TEST_SRC := $(wildcard tests/unit/core/*_test.c) \
+                 $(wildcard tests/unit/core/test_*.c) \
                  $(wildcard tests/unit/runtime/*_test.c) \
+                 $(wildcard tests/unit/runtime/test_*.c) \
                  $(wildcard tests/unit/channel/*_test.c) \
-                 $(wildcard tests/unit/time/*_test.c)
+                 $(wildcard tests/unit/channel/test_*.c) \
+                 $(wildcard tests/unit/time/*_test.c) \
+                 $(wildcard tests/unit/time/test_*.c)
+UNIT_TEST_SRC := $(sort $(UNIT_TEST_SRC))
 
 INVARIANT_TEST_SRC := $(wildcard tests/invariant/lifecycle/*_test.c) \
-                      $(wildcard tests/invariant/quiescence/*_test.c)
+                      $(wildcard tests/invariant/lifecycle/test_*.c) \
+                      $(wildcard tests/invariant/quiescence/*_test.c) \
+                      $(wildcard tests/invariant/quiescence/test_*.c)
+INVARIANT_TEST_SRC := $(sort $(INVARIANT_TEST_SRC))
 
 UNIT_TEST_BIN := $(patsubst tests/%.c,$(TEST_DIR)/%,$(UNIT_TEST_SRC))
 INV_TEST_BIN  := $(patsubst tests/%.c,$(TEST_DIR)/%,$(INVARIANT_TEST_SRC))

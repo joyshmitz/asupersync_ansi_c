@@ -14,9 +14,9 @@
 #include <stdint.h>
 #include <asx/asx_export.h>
 #include <asx/asx_status.h>
+#include <asx/asx_ids.h>
 
-/* Time representation (nanoseconds since epoch, 0 = unset) */
-typedef uint64_t asx_time;
+/* asx_time is defined in asx_ids.h. */
 
 #define ASX_TIME_ZERO     ((asx_time)0)
 #define ASX_TIME_INFINITE ((asx_time)UINT64_MAX)

@@ -19,6 +19,7 @@
 #define ASX_IDS_H
 
 #include <stdint.h>
+#include <asx/asx_export.h>
 
 /* ------------------------------------------------------------------ */
 /* Opaque handle types                                                */
@@ -87,6 +88,92 @@ static inline int asx_handle_is_valid(uint64_t h)
 static inline int asx_handle_state_allowed(uint64_t h, uint16_t allowed_mask)
 {
     return (asx_handle_state_mask(h) & allowed_mask) != 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Time representation                                                */
+/* ------------------------------------------------------------------ */
+
+typedef uint64_t asx_time;
+
+/* ------------------------------------------------------------------ */
+/* Region lifecycle states                                            */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_REGION_OPEN       = 0,
+    ASX_REGION_CLOSING    = 1,
+    ASX_REGION_DRAINING   = 2,
+    ASX_REGION_FINALIZING = 3,
+    ASX_REGION_CLOSED     = 4
+} asx_region_state;
+
+/* ------------------------------------------------------------------ */
+/* Task lifecycle states                                              */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_TASK_CREATED          = 0,
+    ASX_TASK_RUNNING          = 1,
+    ASX_TASK_CANCEL_REQUESTED = 2,
+    ASX_TASK_CANCELLING       = 3,
+    ASX_TASK_FINALIZING       = 4,
+    ASX_TASK_COMPLETED        = 5
+} asx_task_state;
+
+/* ------------------------------------------------------------------ */
+/* Obligation lifecycle states                                        */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_OBLIGATION_RESERVED  = 0,
+    ASX_OBLIGATION_COMMITTED = 1,
+    ASX_OBLIGATION_ABORTED   = 2,
+    ASX_OBLIGATION_LEAKED    = 3
+} asx_obligation_state;
+
+/* ------------------------------------------------------------------ */
+/* Outcome severity lattice                                           */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_OUTCOME_OK        = 0,
+    ASX_OUTCOME_ERR       = 1,
+    ASX_OUTCOME_CANCELLED = 2,
+    ASX_OUTCOME_PANICKED  = 3
+} asx_outcome_severity;
+
+/* ------------------------------------------------------------------ */
+/* Cancellation kinds (11 variants, severity-ordered)                 */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_CANCEL_USER         = 0,   /* severity 0 */
+    ASX_CANCEL_TIMEOUT      = 1,   /* severity 1 */
+    ASX_CANCEL_DEADLINE     = 2,   /* severity 1 */
+    ASX_CANCEL_POLL_QUOTA   = 3,   /* severity 2 */
+    ASX_CANCEL_COST_BUDGET  = 4,   /* severity 2 */
+    ASX_CANCEL_FAIL_FAST    = 5,   /* severity 3 */
+    ASX_CANCEL_RACE_LOST    = 6,   /* severity 3 */
+    ASX_CANCEL_LINKED_EXIT  = 7,   /* severity 3 */
+    ASX_CANCEL_PARENT       = 8,   /* severity 4 */
+    ASX_CANCEL_RESOURCE     = 9,   /* severity 4 */
+    ASX_CANCEL_SHUTDOWN     = 10   /* severity 5 */
+} asx_cancel_kind;
+
+/* Cancellation protocol phases */
+typedef enum {
+    ASX_CANCEL_PHASE_REQUESTED  = 0,
+    ASX_CANCEL_PHASE_CANCELLING = 1,
+    ASX_CANCEL_PHASE_FINALIZING = 2,
+    ASX_CANCEL_PHASE_COMPLETED  = 3
+} asx_cancel_phase;
+
+/* Return the severity level for a cancel kind (0-5) */
+static inline int asx_cancel_severity(asx_cancel_kind kind)
+{
+    static const int severity[] = {0, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5};
+    return (int)kind <= 10 ? severity[(int)kind] : 5;
 }
 
 #endif /* ASX_IDS_H */

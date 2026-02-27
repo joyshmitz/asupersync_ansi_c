@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include "test_harness.h"
+#include "../../test_harness.h"
 #include <asx/asx_status.h>
 
 TEST(ok_is_not_error) {

@@ -13,33 +13,10 @@
 
 #include <asx/asx_export.h>
 #include <asx/asx_status.h>
+#include <asx/asx_ids.h>
 
-/* Region lifecycle states */
-typedef enum {
-    ASX_REGION_OPEN       = 0,
-    ASX_REGION_CLOSING    = 1,
-    ASX_REGION_DRAINING   = 2,
-    ASX_REGION_FINALIZING = 3,
-    ASX_REGION_CLOSED     = 4
-} asx_region_state;
-
-/* Task lifecycle states */
-typedef enum {
-    ASX_TASK_CREATED          = 0,
-    ASX_TASK_RUNNING          = 1,
-    ASX_TASK_CANCEL_REQUESTED = 2,
-    ASX_TASK_CANCELLING       = 3,
-    ASX_TASK_FINALIZING       = 4,
-    ASX_TASK_COMPLETED        = 5
-} asx_task_state;
-
-/* Obligation lifecycle states */
-typedef enum {
-    ASX_OBLIGATION_RESERVED  = 0,
-    ASX_OBLIGATION_COMMITTED = 1,
-    ASX_OBLIGATION_ABORTED   = 2,
-    ASX_OBLIGATION_LEAKED    = 3
-} asx_obligation_state;
+/* State enums (asx_region_state, asx_task_state, asx_obligation_state)
+ * are defined in asx_ids.h. */
 
 /* Validate a region state transition. Returns ASX_OK or ASX_E_INVALID_TRANSITION. */
 ASX_API asx_status asx_region_transition_check(asx_region_state from, asx_region_state to);

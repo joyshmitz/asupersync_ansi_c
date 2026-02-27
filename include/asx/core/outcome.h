@@ -13,17 +13,23 @@
 
 #include <asx/asx_export.h>
 #include <asx/asx_status.h>
+#include <asx/asx_ids.h>
 
-/* Outcome severity levels (total order) */
-typedef enum {
-    ASX_OUTCOME_OK        = 0,
-    ASX_OUTCOME_ERR       = 1,
-    ASX_OUTCOME_CANCELLED = 2,
-    ASX_OUTCOME_PANICKED  = 3
-} asx_outcome_severity;
+/* asx_outcome_severity enum is defined in asx_ids.h. */
 
-/* Opaque outcome type holding severity + payload reference */
-typedef struct asx_outcome asx_outcome;
+/* Outcome type (severity + future payload) */
+typedef struct asx_outcome {
+    asx_outcome_severity severity;
+    /* Payload union will be added by bd-hwb.1 */
+} asx_outcome;
+
+/* Construct an outcome with the given severity */
+static inline asx_outcome asx_outcome_make(asx_outcome_severity s)
+{
+    asx_outcome o;
+    o.severity = s;
+    return o;
+}
 
 /* Return the severity of an outcome */
 ASX_API asx_outcome_severity asx_outcome_severity_of(const asx_outcome *o);
