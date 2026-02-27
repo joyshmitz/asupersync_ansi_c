@@ -180,7 +180,7 @@ INV_TEST_BIN  := $(patsubst tests/%.c,$(TEST_DIR)/%,$(INVARIANT_TEST_SRC))
 # ---------------------------------------------------------------------------
 # Test include path (adds tests/ for test_harness.h)
 # ---------------------------------------------------------------------------
-TEST_CFLAGS := $(ALL_CFLAGS) -I$(CURDIR)/tests
+TEST_CFLAGS := $(ALL_CFLAGS) -I$(CURDIR)/tests -I$(CURDIR)/src
 
 # ===================================================================
 # PRIMARY TARGETS — map 1:1 to quality gate commands
