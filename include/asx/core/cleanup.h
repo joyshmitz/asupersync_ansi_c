@@ -39,7 +39,8 @@ typedef uint32_t asx_cleanup_handle;
 typedef struct {
     asx_cleanup_fn  fns[ASX_CLEANUP_STACK_CAPACITY];
     void           *data[ASX_CLEANUP_STACK_CAPACITY];
-    uint32_t        count;      /* number of active entries */
+    uint16_t        generations[ASX_CLEANUP_STACK_CAPACITY];
+    uint32_t        count;      /* stack depth / high-water slot + 1 */
     uint32_t        drained;    /* 1 after drain has run */
 } asx_cleanup_stack;
 

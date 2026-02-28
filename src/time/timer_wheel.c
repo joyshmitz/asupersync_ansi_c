@@ -24,7 +24,7 @@ typedef struct {
     asx_time  deadline;       /* when this timer fires */
     void     *waker_data;     /* opaque callback data */
     uint64_t  insertion_seq;  /* monotonic tie-break key */
-    uint16_t  generation;     /* for stale-handle detection */
+    uint32_t  generation;     /* for stale-handle detection */
     int       alive;          /* 1 if slot is live (not cancelled/fired) */
 } asx_timer_slot;
 
@@ -47,6 +47,15 @@ struct asx_timer_wheel {
 
 static asx_timer_wheel g_wheel;
 static int g_wheel_initialized = 0;
+
+static uint32_t asx_timer_next_generation(uint32_t current)
+{
+    current++;
+    if (current == 0u) {
+        current = 1u;
+    }
+    return current;
+}
 
 asx_timer_wheel *asx_timer_wheel_global(void)
 {
@@ -82,7 +91,23 @@ void asx_timer_wheel_init(asx_timer_wheel *wheel)
 
 void asx_timer_wheel_reset(asx_timer_wheel *wheel)
 {
-    asx_timer_wheel_init(wheel);
+    uint32_t i;
+
+    if (wheel == NULL) return;
+
+    for (i = 0; i < ASX_MAX_TIMERS; i++) {
+        wheel->slots[i].deadline = 0;
+        wheel->slots[i].waker_data = NULL;
+        wheel->slots[i].insertion_seq = 0;
+        /* Preserve stale-handle safety across reset epochs. */
+        wheel->slots[i].generation = asx_timer_next_generation(wheel->slots[i].generation);
+        wheel->slots[i].alive = 0;
+    }
+    wheel->slot_count = 0;
+    wheel->active_count = 0;
+    wheel->next_insertion = 0;
+    wheel->current_time = 0;
+    wheel->max_duration_ns = ASX_TIMER_MAX_DURATION_NS;
 }
 
 /* -------------------------------------------------------------------
@@ -131,7 +156,7 @@ asx_status asx_timer_register(asx_timer_wheel *wheel,
     wheel->slots[idx].deadline = deadline;
     wheel->slots[idx].waker_data = waker_data;
     wheel->slots[idx].insertion_seq = wheel->next_insertion++;
-    wheel->slots[idx].generation++;
+    wheel->slots[idx].generation = asx_timer_next_generation(wheel->slots[idx].generation);
     wheel->slots[idx].alive = 1;
 
     wheel->active_count++;
