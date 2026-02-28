@@ -141,6 +141,10 @@ asx_status asx_adaptive_decide(
         surface->action_count > ASX_ADAPTIVE_MAX_ACTIONS) {
         return ASX_E_INVALID_ARGUMENT;
     }
+    if (surface->state_count < 1 ||
+        surface->state_count > ASX_ADAPTIVE_MAX_ACTIONS) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
     if (posterior->state_count != surface->state_count) {
         return ASX_E_INVALID_ARGUMENT;
     }

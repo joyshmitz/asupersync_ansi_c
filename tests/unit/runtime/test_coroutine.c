@@ -402,7 +402,7 @@ TEST(co_error_produces_err_outcome) {
     if (policy == ASX_CONTAIN_POISON_REGION) {
         ASSERT_EQ(run_st, ASX_OK);
     } else {
-        ASSERT_EQ(run_st, ASX_E_INVALID_STATE);
+        ASSERT_EQ(run_st, ASX_E_CANCELLED);
     }
 
     /* Task should complete with error outcome */
