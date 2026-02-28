@@ -36,7 +36,7 @@ extern "C" {
 
 typedef struct {
     uint32_t slot;        /* arena slot index */
-    uint16_t generation;  /* generation at registration time */
+    uint32_t generation;  /* generation at registration time */
 } asx_timer_handle;
 
 /* -------------------------------------------------------------------

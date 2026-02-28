@@ -42,7 +42,11 @@ void asx_trace_emit(asx_trace_event_kind kind,
 
 uint32_t asx_trace_event_count(void)
 {
-    return g_trace_count;
+    /* Return stored count, not total emitted. Events beyond capacity
+     * are silently dropped; reporting the unbounded count misleads
+     * callers into iterating past readable entries. */
+    return g_trace_count < ASX_TRACE_CAPACITY
+         ? g_trace_count : ASX_TRACE_CAPACITY;
 }
 
 int asx_trace_event_get(uint32_t index, asx_trace_event *out)

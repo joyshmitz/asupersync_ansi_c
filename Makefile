@@ -120,6 +120,7 @@ CORE_SRC := \
 
 RUNTIME_SRC := \
 	src/runtime/hooks.c \
+	src/runtime/equivalence.c \
 	src/runtime/lifecycle.c \
 	src/runtime/scheduler.c \
 	src/runtime/cancellation.c \
@@ -434,9 +435,8 @@ $(TEST_DIR)/unit/runtime/test_adapter: tests/unit/runtime/test_adapter.c src/run
 $(TEST_DIR)/unit/runtime/test_vertical_adapter: tests/unit/runtime/test_vertical_adapter.c src/runtime/vertical_adapter.c src/runtime/automotive_instrument.c src/runtime/hft_instrument.c src/runtime/overload_catalog.c $(LIB_A) | test-dirs
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/runtime/vertical_adapter.c src/runtime/automotive_instrument.c src/runtime/hft_instrument.c src/runtime/overload_catalog.c $(LIB_A) $(ALL_LDFLAGS)
 
-# Codec equivalence test needs equivalence.c (not in libasx.a)
-$(TEST_DIR)/unit/runtime/test_codec_equivalence: tests/unit/runtime/test_codec_equivalence.c src/runtime/equivalence.c $(LIB_A) | test-dirs
-	$(CC) $(TEST_CFLAGS) -o $@ $< src/runtime/equivalence.c $(LIB_A) $(ALL_LDFLAGS)
+$(TEST_DIR)/unit/runtime/test_codec_equivalence: tests/unit/runtime/test_codec_equivalence.c $(LIB_A) | test-dirs
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
 
 # Link individual unit tests
 $(TEST_DIR)/unit/%: tests/unit/%.c $(LIB_A) | test-dirs
