@@ -166,6 +166,7 @@ TEST(failing_task_outcome_err)
     asx_outcome outcome;
     asx_budget budget;
     asx_status st;
+    asx_containment_policy policy;
 
     st = asx_region_open(&rid);
     ASSERT_EQ(st, ASX_OK);
@@ -175,7 +176,12 @@ TEST(failing_task_outcome_err)
 
     budget = asx_budget_infinite();
     st = asx_scheduler_run(rid, &budget);
-    ASSERT_EQ(st, ASX_OK);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(st, ASX_OK);
+    } else {
+        ASSERT_EQ(st, ASX_E_INVALID_STATE);
+    }
 
     st = asx_task_get_outcome(tid, &outcome);
     ASSERT_EQ(st, ASX_OK);

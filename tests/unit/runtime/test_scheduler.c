@@ -139,6 +139,8 @@ TEST(scheduler_task_failure_emits_complete) {
     asx_task_id tid;
     asx_budget budget;
     asx_scheduler_event ev;
+    asx_status st;
+    asx_containment_policy policy;
 
     asx_runtime_reset();
     asx_ghost_reset();
@@ -147,10 +149,19 @@ TEST(scheduler_task_failure_emits_complete) {
     ASSERT_EQ(asx_task_spawn(rid, poll_fail, NULL, &tid), ASX_OK);
 
     budget = asx_budget_infinite();
-    ASSERT_EQ(asx_scheduler_run(rid, &budget), ASX_OK);
+    st = asx_scheduler_run(rid, &budget);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(st, ASX_OK);
+        ASSERT_EQ(asx_scheduler_event_count(), (uint32_t)3);
+    } else {
+        ASSERT_EQ(st, ASX_E_INVALID_STATE);
+        ASSERT_EQ(asx_scheduler_event_count(), (uint32_t)2);
+    }
 
-    /* poll(0), complete(1), quiescent(2) */
-    ASSERT_EQ(asx_scheduler_event_count(), (uint32_t)3);
+    /* poll(0), complete(1), [optional quiescent(2)] */
+    ASSERT_TRUE(asx_scheduler_event_get(0, &ev));
+    ASSERT_EQ(ev.kind, ASX_SCHED_EVENT_POLL);
 
     ASSERT_TRUE(asx_scheduler_event_get(1, &ev));
     ASSERT_EQ(ev.kind, ASX_SCHED_EVENT_COMPLETE);

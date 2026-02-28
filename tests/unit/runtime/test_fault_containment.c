@@ -146,6 +146,8 @@ TEST(failing_task_does_not_block_other_tasks) {
     asx_task_state sf, so;
     asx_outcome out_fail, out_ok;
     asx_budget budget;
+    asx_status run_st;
+    asx_containment_policy policy;
 
     asx_runtime_reset();
 
@@ -154,19 +156,28 @@ TEST(failing_task_does_not_block_other_tasks) {
     ASSERT_EQ(asx_task_spawn(rid, poll_complete, NULL, &tid_ok), ASX_OK);
 
     budget = asx_budget_from_polls(10);
-    ASSERT_EQ(asx_scheduler_run(rid, &budget), ASX_OK);
+    run_st = asx_scheduler_run(rid, &budget);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(run_st, ASX_OK);
+    } else {
+        ASSERT_EQ(run_st, ASX_E_INVALID_STATE);
+    }
 
-    /* Both should be completed */
+    /* Failing task must complete with ERR outcome. */
     ASSERT_EQ(asx_task_get_state(tid_fail, &sf), ASX_OK);
     ASSERT_EQ((int)sf, (int)ASX_TASK_COMPLETED);
-    ASSERT_EQ(asx_task_get_state(tid_ok, &so), ASX_OK);
-    ASSERT_EQ((int)so, (int)ASX_TASK_COMPLETED);
-
-    /* Failing task gets ERR, OK task gets OK */
     ASSERT_EQ(asx_task_get_outcome(tid_fail, &out_fail), ASX_OK);
     ASSERT_EQ((int)out_fail.severity, (int)ASX_OUTCOME_ERR);
-    ASSERT_EQ(asx_task_get_outcome(tid_ok, &out_ok), ASX_OK);
-    ASSERT_EQ((int)out_ok.severity, (int)ASX_OUTCOME_OK);
+
+    ASSERT_EQ(asx_task_get_state(tid_ok, &so), ASX_OK);
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ((int)so, (int)ASX_TASK_COMPLETED);
+        ASSERT_EQ(asx_task_get_outcome(tid_ok, &out_ok), ASX_OK);
+        ASSERT_EQ((int)out_ok.severity, (int)ASX_OUTCOME_OK);
+    } else {
+        ASSERT_TRUE(so == ASX_TASK_CREATED || so == ASX_TASK_RUNNING);
+    }
 }
 
 /* -------------------------------------------------------------------
@@ -325,6 +336,8 @@ TEST(scheduler_handles_fail_and_pending_mix) {
     asx_task_id tid_fail, tid_pend;
     asx_task_state sf, sp;
     asx_budget budget;
+    asx_status run_st;
+    asx_containment_policy policy;
 
     asx_runtime_reset();
 
@@ -334,13 +347,23 @@ TEST(scheduler_handles_fail_and_pending_mix) {
 
     /* Run 1 round — failing task completes, pending task stays */
     budget = asx_budget_from_polls(2);
-    SCHED_RUN_IGNORE(rid, &budget);
+    run_st = asx_scheduler_run(rid, &budget);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(run_st, ASX_E_POLL_BUDGET_EXHAUSTED);
+    } else {
+        ASSERT_TRUE(run_st != ASX_OK);
+    }
 
     ASSERT_EQ(asx_task_get_state(tid_fail, &sf), ASX_OK);
     ASSERT_EQ((int)sf, (int)ASX_TASK_COMPLETED);
 
     ASSERT_EQ(asx_task_get_state(tid_pend, &sp), ASX_OK);
-    ASSERT_EQ((int)sp, (int)ASX_TASK_RUNNING);
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ((int)sp, (int)ASX_TASK_RUNNING);
+    } else {
+        ASSERT_EQ((int)sp, (int)ASX_TASK_CREATED);
+    }
 }
 
 /* -------------------------------------------------------------------

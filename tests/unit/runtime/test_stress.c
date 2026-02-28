@@ -590,6 +590,7 @@ TEST(fault_containment_multiple_failures_same_region)
     asx_region_id rid;
     asx_task_id t1, t2, t3;
     int poisoned;
+    asx_containment_policy policy;
 
     reset_all();
     ASSERT_EQ(asx_region_open(&rid), ASX_OK);
@@ -603,15 +604,21 @@ TEST(fault_containment_multiple_failures_same_region)
     {
         asx_budget budget = asx_budget_from_polls(20);
         asx_status rc = asx_scheduler_run(rid, &budget);
-        /* Should complete (drains all tasks despite poison) */
-        ASSERT_EQ(rc, ASX_OK);
+        policy = asx_containment_policy_active();
+        if (policy == ASX_CONTAIN_POISON_REGION) {
+            ASSERT_EQ(rc, ASX_OK);
+        } else {
+            ASSERT_TRUE(rc != ASX_OK);
+        }
     }
 
-    /* Region should be poisoned (in debug safety profile) */
+    /* Region poison depends on active policy. */
     ASSERT_EQ(asx_region_is_poisoned(rid, &poisoned), ASX_OK);
-    /* Note: poisoned depends on active containment policy.
-     * In FAIL_FAST mode, poison is not set. We just verify the call works. */
-    (void)poisoned;
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(poisoned, 1);
+    } else {
+        ASSERT_EQ(poisoned, 0);
+    }
 }
 
 /* -------------------------------------------------------------------

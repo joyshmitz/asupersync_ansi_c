@@ -79,6 +79,29 @@ TEST(create_exhaustion)
     ASSERT_EQ(asx_channel_create(g_rid, 4, &ch), ASX_E_RESOURCE_EXHAUSTED);
 }
 
+TEST(create_rejects_non_region_handle)
+{
+    asx_channel_id ch;
+    asx_region_id not_region;
+    setup();
+
+    not_region = asx_handle_pack(ASX_TYPE_TASK, 0u, 1u);
+    ASSERT_EQ(asx_channel_create(not_region, 4, &ch), ASX_E_INVALID_ARGUMENT);
+}
+
+TEST(create_rejects_closed_region)
+{
+    asx_channel_id ch;
+    asx_region_id rid;
+    asx_budget budget;
+    setup();
+
+    ASSERT_EQ(asx_region_open(&rid), ASX_OK);
+    budget = asx_budget_infinite();
+    ASSERT_EQ(asx_region_drain(rid, &budget), ASX_OK);
+    ASSERT_EQ(asx_channel_create(rid, 4, &ch), ASX_E_INVALID_STATE);
+}
+
 TEST(initial_state_is_open)
 {
     asx_channel_id ch;
@@ -578,6 +601,8 @@ int main(void)
     RUN_TEST(create_over_max_capacity);
     RUN_TEST(create_max_capacity);
     RUN_TEST(create_exhaustion);
+    RUN_TEST(create_rejects_non_region_handle);
+    RUN_TEST(create_rejects_closed_region);
     RUN_TEST(initial_state_is_open);
     RUN_TEST(initial_queue_empty);
     RUN_TEST(initial_reserved_zero);

@@ -153,6 +153,7 @@ static int scenario_abort(void)
     asx_status st;
     asx_region_id region;
     asx_task_id task;
+    asx_obligation_state ostate;
     asx_budget budget;
     void *state_ptr = NULL;
     obligated_state *os;
@@ -173,6 +174,29 @@ static int scenario_abort(void)
     os->co = (asx_co_state)ASX_CO_STATE_INIT;
     os->region = region;
     os->committed = 0;
+
+    /*
+     * Reserve/abort must happen while region is OPEN because obligation
+     * reserve is illegal once close starts (OPEN -> CLOSING).
+     */
+    budget = asx_budget_from_polls(100);
+    st = asx_scheduler_run(region, &budget);
+    if (st != ASX_OK) {
+        printf("  FAIL: scheduler_run returned %s\n", asx_status_str(st));
+        return 1;
+    }
+
+    st = asx_obligation_get_state(os->obligation, &ostate);
+    if (st != ASX_OK || ostate != ASX_OBLIGATION_ABORTED) {
+        printf("  FAIL: obligation should be aborted before close/drain\n");
+        return 1;
+    }
+
+    st = asx_region_close(region);
+    if (st != ASX_OK) {
+        printf("  FAIL: region_close returned %s\n", asx_status_str(st));
+        return 1;
+    }
 
     budget = asx_budget_from_polls(100);
     st = asx_region_drain(region, &budget);

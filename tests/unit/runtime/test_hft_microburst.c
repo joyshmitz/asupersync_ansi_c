@@ -558,8 +558,11 @@ TEST(hft_burst_errors_do_not_corrupt_peers)
     asx_task_id fail_tids[8];
     asx_budget budget;
     uint32_t i;
-    uint32_t ok_count;
-    uint32_t err_count;
+    uint32_t ok_completed;
+    uint32_t fail_completed;
+    uint32_t fail_non_ok_outcome;
+    asx_containment_policy policy;
+    asx_status run_st;
 
     reset_all();
     ASSERT_EQ(asx_region_open(&rid), ASX_OK);
@@ -573,32 +576,47 @@ TEST(hft_burst_errors_do_not_corrupt_peers)
     }
 
     budget = asx_budget_from_polls(200);
-    /* Scheduler may or may not return OK depending on containment policy */
-    IGNORE(asx_scheduler_run(rid, &budget));
+    run_st = asx_scheduler_run(rid, &budget);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(run_st, ASX_OK);
+    } else {
+        ASSERT_TRUE(run_st != ASX_OK);
+    }
 
-    /* All tasks should be completed */
-    ok_count = 0;
-    err_count = 0;
+    ok_completed = 0;
+    fail_completed = 0;
+    fail_non_ok_outcome = 0;
     for (i = 0; i < 8; i++) {
         asx_task_state state;
         asx_outcome out;
 
         ASSERT_EQ(asx_task_get_state(ok_tids[i], &state), ASX_OK);
-        ASSERT_EQ(state, ASX_TASK_COMPLETED);
-        ASSERT_EQ(asx_task_get_outcome(ok_tids[i], &out), ASX_OK);
-        if (out.severity == ASX_OUTCOME_OK) ok_count++;
+        if (state == ASX_TASK_COMPLETED) {
+            ok_completed++;
+            ASSERT_EQ(asx_task_get_outcome(ok_tids[i], &out), ASX_OK);
+        }
 
         ASSERT_EQ(asx_task_get_state(fail_tids[i], &state), ASX_OK);
-        ASSERT_EQ(state, ASX_TASK_COMPLETED);
-        ASSERT_EQ(asx_task_get_outcome(fail_tids[i], &out), ASX_OK);
-        if (out.severity == ASX_OUTCOME_ERR ||
-            out.severity == ASX_OUTCOME_CANCELLED) err_count++;
+        if (state == ASX_TASK_COMPLETED) {
+            fail_completed++;
+            ASSERT_EQ(asx_task_get_outcome(fail_tids[i], &out), ASX_OK);
+            if (out.severity == ASX_OUTCOME_ERR ||
+                out.severity == ASX_OUTCOME_CANCELLED) {
+                fail_non_ok_outcome++;
+            }
+        }
     }
 
-    /* At least the first OK task should have OK outcome (before poison) */
-    ASSERT_TRUE(ok_count > 0 || err_count > 0);
-    /* All 8 fail tasks must have non-OK outcome */
-    ASSERT_EQ(err_count, 8u);
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(ok_completed, 8u);
+        ASSERT_EQ(fail_completed, 8u);
+        ASSERT_EQ(fail_non_ok_outcome, 8u);
+    } else {
+        /* Fail-fast / error-only: first fault aborts run, but no state corruption. */
+        ASSERT_TRUE(fail_completed >= 1u);
+        ASSERT_EQ(fail_completed, fail_non_ok_outcome);
+    }
 }
 
 /* -------------------------------------------------------------------

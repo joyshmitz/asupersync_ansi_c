@@ -230,6 +230,18 @@ TEST(replay_no_reference_is_match) {
     ASSERT_EQ(result.result, ASX_REPLAY_MATCH);
 }
 
+TEST(replay_reference_rejects_over_capacity) {
+    asx_trace_event ref[1];
+
+    ref[0].sequence = 0;
+    ref[0].kind = ASX_TRACE_SCHED_POLL;
+    ref[0].entity_id = 1;
+    ref[0].aux = 0;
+
+    ASSERT_EQ(asx_replay_load_reference(ref, ASX_TRACE_CAPACITY + 1u),
+              ASX_E_INVALID_ARGUMENT);
+}
+
 /* ---- Snapshot export ---- */
 
 TEST(snapshot_capture_empty) {
@@ -316,6 +328,7 @@ int main(void) {
     RUN_TEST(replay_detects_kind_mismatch);
     RUN_TEST(replay_detects_entity_mismatch);
     RUN_TEST(replay_no_reference_is_match);
+    RUN_TEST(replay_reference_rejects_over_capacity);
     RUN_TEST(snapshot_capture_empty);
     RUN_TEST(snapshot_capture_with_region);
     RUN_TEST(snapshot_digest_deterministic);

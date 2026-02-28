@@ -140,9 +140,8 @@ static void scenario_crash_restart_simple(void)
 
     {
         asx_status continuity_rc = asx_trace_continuity_check(trace_buf, trace_len);
-        SCENARIO_CHECK(continuity_rc == ASX_OK ||
-                       continuity_rc == ASX_E_REPLAY_MISMATCH,
-                       "post-restart continuity outcome should be classified");
+        SCENARIO_CHECK(continuity_rc == ASX_OK,
+                       "post-restart continuity should match");
     }
 
     SCENARIO_END();
@@ -330,11 +329,11 @@ static void scenario_corrupted_trace_detected(void)
         trace_buf[30] ^= 0xFF;
     }
 
-    /* Import should fail or produce different digest */
+    /* Import must fail validation for corrupted binary trace. */
     asx_trace_reset();
     asx_status rc = asx_trace_import_binary(trace_buf, trace_len);
-    /* Either import fails validation or produces mismatched continuity */
-    SCENARIO_CHECK(rc != ASX_OK || 1, "corrupt trace should be detectable");
+    SCENARIO_CHECK(rc == ASX_E_INVALID_ARGUMENT,
+                   "corrupt trace should fail import validation");
 
     SCENARIO_END();
 }

@@ -403,6 +403,27 @@ TEST(timer_generation_increments_on_reuse) {
 }
 
 /* -------------------------------------------------------------------
+ * Test: stale handle from pre-reset epoch is rejected
+ * ------------------------------------------------------------------- */
+
+TEST(timer_stale_handle_rejected_after_reset) {
+    asx_timer_wheel *w = asx_timer_wheel_global();
+    asx_timer_handle old_h, new_h;
+
+    asx_timer_wheel_reset(w);
+    ASSERT_EQ(asx_timer_register(w, 100, NULL, &old_h), ASX_OK);
+
+    /* Reset bumps per-slot generations so old handles cannot be reused. */
+    asx_timer_wheel_reset(w);
+    ASSERT_EQ(asx_timer_register(w, 200, NULL, &new_h), ASX_OK);
+
+    ASSERT_EQ(old_h.slot, new_h.slot);
+    ASSERT_NE(old_h.generation, new_h.generation);
+    ASSERT_FALSE(asx_timer_cancel(w, &old_h));
+    ASSERT_TRUE(asx_timer_cancel(w, &new_h));
+}
+
+/* -------------------------------------------------------------------
  * Test: timer at deadline 0 fires immediately
  * ------------------------------------------------------------------- */
 
@@ -573,6 +594,7 @@ int main(void) {
     RUN_TEST(timer_update_allows_null_old_handle);
     RUN_TEST(timer_churn_register_cancel);
     RUN_TEST(timer_generation_increments_on_reuse);
+    RUN_TEST(timer_stale_handle_rejected_after_reset);
     RUN_TEST(timer_zero_deadline_fires_immediately);
     RUN_TEST(timer_null_argument_rejection);
     RUN_TEST(timer_advance_does_not_fire);

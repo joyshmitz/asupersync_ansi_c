@@ -45,6 +45,7 @@ static int run_scenario(uint64_t *out_digest)
     det_state *ds;
 
     asx_runtime_reset();
+    asx_trace_reset();
 
     st = asx_region_open(&region);
     if (st != ASX_OK) return 1;
@@ -98,8 +99,8 @@ static int scenario_trace_digest(void)
     printf("  second run digest: 0x%016llx\n", (unsigned long long)digest2);
 
     if (digest1 != digest2) {
-        printf("  NOTE: digests differ in current runtime build; "
-               "treating as non-fatal ergonomics observation\n");
+        printf("  FAIL: digest mismatch for identical deterministic scenario\n");
+        return 1;
     }
 
     printf("  PASS: trace digest API usage\n");
@@ -205,22 +206,23 @@ static int scenario_binary_roundtrip(void)
      */
     st = asx_trace_continuity_check(buf, buf_len);
     if (st != ASX_OK) {
-        printf("  NOTE: continuity_check returned %s; "
-               "recording as non-fatal ergonomics observation\n",
-               asx_status_str(st));
+        printf("  FAIL: continuity_check returned %s\n", asx_status_str(st));
+        return 1;
     }
 
     /* Also exercise the two-step replay API path. */
     st = asx_trace_import_binary(buf, buf_len);
     if (st != ASX_OK) {
-        printf("  NOTE: import_binary returned %s; "
-               "recording as non-fatal ergonomics observation\n",
-               asx_status_str(st));
-    } else {
-        rr = asx_replay_verify();
-        printf("  replay_verify result=%s index=%u\n",
-               asx_replay_result_kind_str(rr.result),
-               rr.divergence_index);
+        printf("  FAIL: import_binary returned %s\n", asx_status_str(st));
+        return 1;
+    }
+    rr = asx_replay_verify();
+    printf("  replay_verify result=%s index=%u\n",
+           asx_replay_result_kind_str(rr.result),
+           rr.divergence_index);
+    if (rr.result != ASX_REPLAY_MATCH) {
+        printf("  FAIL: replay_verify expected match\n");
+        return 1;
     }
 
     printf("  PASS: binary trace roundtrip API usage\n");

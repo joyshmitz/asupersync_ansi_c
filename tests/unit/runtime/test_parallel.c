@@ -12,6 +12,7 @@
 #include <asx/asx.h>
 #include <asx/runtime/runtime.h>
 #include <asx/runtime/parallel.h>
+#include <asx/runtime/trace.h>
 #include <asx/core/ghost.h>
 
 /* ---- Test poll functions ---- */
@@ -39,6 +40,20 @@ static asx_status poll_forever(void *data, asx_task_id self) {
 static asx_status poll_fail(void *data, asx_task_id self) {
     (void)data; (void)self;
     return ASX_E_INVALID_STATE;
+}
+
+static int g_parallel_dtor_calls;
+static uint32_t g_parallel_dtor_last_size;
+
+static void reset_parallel_dtor_tracker(void) {
+    g_parallel_dtor_calls = 0;
+    g_parallel_dtor_last_size = 0;
+}
+
+static void parallel_test_dtor(void *state, uint32_t state_size) {
+    (void)state;
+    g_parallel_dtor_calls++;
+    g_parallel_dtor_last_size = state_size;
 }
 
 /* ---- Helpers ---- */
@@ -271,6 +286,9 @@ TEST(parallel_run_task_fails) {
     asx_task_id tid;
     asx_budget budget;
     asx_parallel_config cfg = default_config();
+    asx_status st;
+    asx_outcome out;
+    asx_containment_policy policy;
 
     reset_all();
     ASSERT_EQ(asx_parallel_init(&cfg), ASX_OK);
@@ -279,7 +297,40 @@ TEST(parallel_run_task_fails) {
     ASSERT_EQ(asx_task_spawn(rid, poll_fail, NULL, &tid), ASX_OK);
 
     budget = asx_budget_from_polls(100);
+    st = asx_parallel_run(rid, &budget);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(st, ASX_OK);
+    } else {
+        ASSERT_EQ(st, ASX_E_INVALID_STATE);
+    }
+
+    ASSERT_EQ(asx_task_get_outcome(tid, &out), ASX_OK);
+    ASSERT_EQ((int)out.severity, (int)ASX_OUTCOME_ERR);
+
+    asx_parallel_reset();
+}
+
+TEST(parallel_run_captured_state_dtor_on_complete) {
+    asx_region_id rid;
+    asx_task_id tid;
+    asx_budget budget;
+    asx_parallel_config cfg = default_config();
+    void *state_ptr = NULL;
+
+    reset_all();
+    reset_parallel_dtor_tracker();
+    ASSERT_EQ(asx_parallel_init(&cfg), ASX_OK);
+    ASSERT_EQ(asx_region_open(&rid), ASX_OK);
+    ASSERT_EQ(asx_task_spawn_captured(rid, poll_complete,
+                                      (uint32_t)sizeof(uint32_t),
+                                      parallel_test_dtor,
+                                      &tid, &state_ptr), ASX_OK);
+
+    budget = asx_budget_from_polls(10);
     ASSERT_EQ(asx_parallel_run(rid, &budget), ASX_OK);
+    ASSERT_EQ(g_parallel_dtor_calls, 1);
+    ASSERT_EQ(g_parallel_dtor_last_size, (uint32_t)sizeof(uint32_t));
 
     asx_parallel_reset();
 }
@@ -540,6 +591,58 @@ TEST(parallel_replay_identity) {
     asx_parallel_reset();
 }
 
+TEST(parallel_single_worker_trace_matches_core_scheduler) {
+    asx_region_id rid;
+    asx_task_id t1, t2;
+    asx_budget budget;
+    asx_parallel_config cfg = default_config();
+    int c1, c2;
+    uint32_t i;
+    uint32_t core_count;
+    asx_trace_event core_events[64];
+
+    /* Core scheduler run. */
+    reset_all();
+    asx_trace_reset();
+    c1 = 1;
+    c2 = 1;
+    ASSERT_EQ(asx_region_open(&rid), ASX_OK);
+    ASSERT_EQ(asx_task_spawn(rid, poll_yield_n, &c1, &t1), ASX_OK);
+    ASSERT_EQ(asx_task_spawn(rid, poll_yield_n, &c2, &t2), ASX_OK);
+    budget = asx_budget_from_polls(100);
+    ASSERT_EQ(asx_scheduler_run(rid, &budget), ASX_OK);
+
+    core_count = asx_trace_event_count();
+    ASSERT_TRUE(core_count > 0u);
+    ASSERT_TRUE(core_count <= 64u);
+    for (i = 0; i < core_count; i++) {
+        ASSERT_TRUE(asx_trace_event_get(i, &core_events[i]));
+    }
+
+    /* Parallel single-worker run with identical setup. */
+    reset_all();
+    asx_trace_reset();
+    c1 = 1;
+    c2 = 1;
+    ASSERT_EQ(asx_parallel_init(&cfg), ASX_OK);
+    ASSERT_EQ(asx_region_open(&rid), ASX_OK);
+    ASSERT_EQ(asx_task_spawn(rid, poll_yield_n, &c1, &t1), ASX_OK);
+    ASSERT_EQ(asx_task_spawn(rid, poll_yield_n, &c2, &t2), ASX_OK);
+    budget = asx_budget_from_polls(100);
+    ASSERT_EQ(asx_parallel_run(rid, &budget), ASX_OK);
+
+    ASSERT_EQ(asx_trace_event_count(), core_count);
+    for (i = 0; i < core_count; i++) {
+        asx_trace_event ev;
+        ASSERT_TRUE(asx_trace_event_get(i, &ev));
+        ASSERT_EQ((int)ev.kind, (int)core_events[i].kind);
+        ASSERT_EQ(ev.entity_id, core_events[i].entity_id);
+        ASSERT_EQ(ev.aux, core_events[i].aux);
+    }
+
+    asx_parallel_reset();
+}
+
 /* ================================================================
  * Multi-worker config
  * ================================================================ */
@@ -622,6 +725,7 @@ int main(void) {
     RUN_TEST(parallel_run_single_task_completes);
     RUN_TEST(parallel_run_task_yields_then_completes);
     RUN_TEST(parallel_run_task_fails);
+    RUN_TEST(parallel_run_captured_state_dtor_on_complete);
     RUN_TEST(parallel_run_budget_exhaustion);
     RUN_TEST(parallel_run_null_budget);
     RUN_TEST(parallel_run_not_initialized);
@@ -641,6 +745,7 @@ int main(void) {
 
     /* Replay identity */
     RUN_TEST(parallel_replay_identity);
+    RUN_TEST(parallel_single_worker_trace_matches_core_scheduler);
 
     /* Multi-worker */
     RUN_TEST(parallel_multi_worker_init);

@@ -164,6 +164,37 @@ TEST(cleanup_push_after_drain_rearms_stack) {
     ASSERT_EQ(counter, 2);
 }
 
+TEST(cleanup_stale_handle_rejected_after_drain_reuse) {
+    asx_cleanup_stack s;
+    asx_cleanup_handle old_h;
+    asx_cleanup_handle new_h;
+    int counter = 0;
+
+    asx_cleanup_init(&s);
+    ASSERT_EQ(asx_cleanup_push(&s, increment_counter, &counter, &old_h), ASX_OK);
+    asx_cleanup_drain(&s);
+
+    ASSERT_EQ(asx_cleanup_push(&s, increment_counter, &counter, &new_h), ASX_OK);
+    ASSERT_NE(old_h, new_h);
+    ASSERT_EQ(asx_cleanup_pop(&s, old_h), ASX_E_NOT_FOUND);
+    ASSERT_EQ(asx_cleanup_pop(&s, new_h), ASX_OK);
+}
+
+TEST(cleanup_lifo_pop_reuse_does_not_false_exhaust) {
+    asx_cleanup_stack s;
+    asx_cleanup_handle h;
+    uint32_t i;
+
+    asx_cleanup_init(&s);
+    for (i = 0; i < ASX_CLEANUP_STACK_CAPACITY; i++) {
+        ASSERT_EQ(asx_cleanup_push(&s, increment_counter, NULL, &h), ASX_OK);
+        ASSERT_EQ(asx_cleanup_pop(&s, h), ASX_OK);
+    }
+
+    ASSERT_EQ(asx_cleanup_pending(&s), (uint32_t)0);
+    ASSERT_EQ(asx_cleanup_push(&s, increment_counter, NULL, &h), ASX_OK);
+}
+
 TEST(cleanup_drain_empty_is_noop) {
     asx_cleanup_stack s;
     asx_cleanup_init(&s);
@@ -229,6 +260,8 @@ int main(void) {
     RUN_TEST(cleanup_drain_skips_popped);
     RUN_TEST(cleanup_drain_idempotent);
     RUN_TEST(cleanup_push_after_drain_rearms_stack);
+    RUN_TEST(cleanup_stale_handle_rejected_after_drain_reuse);
+    RUN_TEST(cleanup_lifo_pop_reuse_does_not_false_exhaust);
     RUN_TEST(cleanup_drain_empty_is_noop);
     RUN_TEST(cleanup_drain_null_is_safe);
     RUN_TEST(cleanup_capacity_exhaustion);

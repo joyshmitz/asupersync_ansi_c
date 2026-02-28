@@ -382,6 +382,8 @@ TEST(co_error_produces_err_outcome) {
     asx_budget budget;
     asx_task_state tstate;
     asx_outcome outcome;
+    asx_status run_st;
+    asx_containment_policy policy;
 
     asx_runtime_reset();
     asx_ghost_reset();
@@ -395,7 +397,13 @@ TEST(co_error_produces_err_outcome) {
     s = (failing_state *)state_ptr;
 
     budget = make_budget(100);
-    ASSERT_EQ(asx_scheduler_run(rid, &budget), ASX_OK);
+    run_st = asx_scheduler_run(rid, &budget);
+    policy = asx_containment_policy_active();
+    if (policy == ASX_CONTAIN_POISON_REGION) {
+        ASSERT_EQ(run_st, ASX_OK);
+    } else {
+        ASSERT_EQ(run_st, ASX_E_INVALID_STATE);
+    }
 
     /* Task should complete with error outcome */
     ASSERT_EQ(asx_task_get_state(tid, &tstate), ASX_OK);
