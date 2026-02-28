@@ -29,7 +29,7 @@ Environment:
                                 approved exception ledger (default: docs/SEMANTIC_DELTA_EXCEPTIONS.json)
   SEMANTIC_DELTA_ARTIFACT_DIR=<dir>
                                 semantic-delta artifact output directory
-                                (default: build/conformance)
+                                (default: <BUILD_DIR>/conformance)
   CONFORMANCE_CFLAGS="..."      override compile flags for smoke binary
 EOF
 }
@@ -66,10 +66,13 @@ BASELINE_FILE="$REPO_ROOT/docs/rust_baseline_inventory.json"
 SCHEMA_FILE="$REPO_ROOT/schemas/canonical_fixture.schema.json"
 SEMANTIC_DELTA_BUDGET_DEFAULT="${ASX_SEMANTIC_DELTA_BUDGET:-0}"
 SEMANTIC_DELTA_EXCEPTION_FILE="${ASX_SEMANTIC_DELTA_EXCEPTION_FILE:-$REPO_ROOT/docs/SEMANTIC_DELTA_EXCEPTIONS.json}"
-SEMANTIC_DELTA_ARTIFACT_DIR="${SEMANTIC_DELTA_ARTIFACT_DIR:-$REPO_ROOT/build/conformance}"
 BUILD_DIR="${BUILD_DIR:-build}"
 if [[ "$BUILD_DIR" != /* ]]; then
   BUILD_DIR="$REPO_ROOT/$BUILD_DIR"
+fi
+SEMANTIC_DELTA_ARTIFACT_DIR="${SEMANTIC_DELTA_ARTIFACT_DIR:-$BUILD_DIR/conformance}"
+if [[ "$SEMANTIC_DELTA_ARTIFACT_DIR" != /* ]]; then
+  SEMANTIC_DELTA_ARTIFACT_DIR="$REPO_ROOT/$SEMANTIC_DELTA_ARTIFACT_DIR"
 fi
 LIB_ASX="$BUILD_DIR/lib/libasx.a"
 
@@ -372,6 +375,8 @@ EOF
 
   if [[ "$runner_build_rc" -ne 0 ]]; then
     fixture_runner_bin=""
+    echo "[asx] conformance[$MODE]: fixture replay runner compilation failed; tail of $RUNNER_BUILD_LOG" >&2
+    tail -n 40 "$RUNNER_BUILD_LOG" >&2 || true
     jq -n -c \
       --arg run_id "$RUN_ID" \
       --arg mode "$MODE" \
@@ -780,9 +785,21 @@ semantic_delta_diagnostic="semantic delta within budget"
 if [[ "$non_budgetable_count" -gt 0 ]]; then
   semantic_delta_pass=false
   semantic_delta_diagnostic="non-budgetable conformance failures detected"
+  echo "[asx] conformance[$MODE]: non-budgetable semantic-delta records detected:" >&2
+  jq -r \
+    --arg mode "$MODE" \
+    '.[] |
+      "[asx] conformance[" + $mode + "]: non-budgetable scenario=\(.scenario_id // "unknown") codec=\(.codec // "unknown") profile=\(.profile // "unknown") diagnostic=\(.diagnostic // "n/a")"' \
+    <<<"$non_budgetable_records_json" >&2
 elif [[ "$semantic_delta_count" -gt "$allowed_budget" ]]; then
   semantic_delta_pass=false
   semantic_delta_diagnostic="semantic delta budget exceeded"
+  echo "[asx] conformance[$MODE]: semantic delta budget exceeded (count=$semantic_delta_count, allowed=$allowed_budget)" >&2
+  jq -r \
+    --arg mode "$MODE" \
+    '.[] |
+      "[asx] conformance[" + $mode + "]: delta scenario=\(.scenario_id // "unknown") codec=\(.codec // "unknown") profile=\(.profile // "unknown") classification=\(.delta_classification // "n/a") diagnostic=\(.diagnostic // "n/a")"' \
+    <<<"$semantic_delta_records_json" >&2
 fi
 
 jq -n \

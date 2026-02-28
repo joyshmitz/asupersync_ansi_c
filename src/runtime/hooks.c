@@ -227,7 +227,12 @@ asx_status asx_runtime_hooks_validate(const asx_runtime_hooks *hooks,
 /* ------------------------------------------------------------------ */
 
 asx_status asx_runtime_set_hooks(const asx_runtime_hooks *hooks) {
+    asx_status st;
     if (!hooks) return ASX_E_INVALID_ARGUMENT;
+    /* Validate hooks before installing to prevent misconfiguration.
+     * The deterministic flag is read from the hooks struct itself. */
+    st = asx_runtime_hooks_validate(hooks, hooks->deterministic_seeded_prng);
+    if (st != ASX_OK) return st;
     g_hooks = *hooks;
     g_hooks_installed = 1;
     return ASX_OK;
@@ -872,21 +877,51 @@ static asx_status asx_codec_decode_provenance_json(const char *cursor,
         }
 
         if (asx_codec_key_equals(key, "rust_baseline_commit")) {
+            if ((seen & ASX_PROV_RUST_BASELINE) != 0u) {
+                free(key);
+                free(value);
+                return ASX_E_INVALID_ARGUMENT;
+            }
             prov->rust_baseline_commit = value;
             seen |= ASX_PROV_RUST_BASELINE;
         } else if (asx_codec_key_equals(key, "rust_toolchain_commit_hash")) {
+            if ((seen & ASX_PROV_TOOLCHAIN_HASH) != 0u) {
+                free(key);
+                free(value);
+                return ASX_E_INVALID_ARGUMENT;
+            }
             prov->rust_toolchain_commit_hash = value;
             seen |= ASX_PROV_TOOLCHAIN_HASH;
         } else if (asx_codec_key_equals(key, "rust_toolchain_release")) {
+            if ((seen & ASX_PROV_TOOLCHAIN_RELEASE) != 0u) {
+                free(key);
+                free(value);
+                return ASX_E_INVALID_ARGUMENT;
+            }
             prov->rust_toolchain_release = value;
             seen |= ASX_PROV_TOOLCHAIN_RELEASE;
         } else if (asx_codec_key_equals(key, "rust_toolchain_host")) {
+            if ((seen & ASX_PROV_TOOLCHAIN_HOST) != 0u) {
+                free(key);
+                free(value);
+                return ASX_E_INVALID_ARGUMENT;
+            }
             prov->rust_toolchain_host = value;
             seen |= ASX_PROV_TOOLCHAIN_HOST;
         } else if (asx_codec_key_equals(key, "cargo_lock_sha256")) {
+            if ((seen & ASX_PROV_CARGO_LOCK) != 0u) {
+                free(key);
+                free(value);
+                return ASX_E_INVALID_ARGUMENT;
+            }
             prov->cargo_lock_sha256 = value;
             seen |= ASX_PROV_CARGO_LOCK;
         } else if (asx_codec_key_equals(key, "capture_run_id")) {
+            if ((seen & ASX_PROV_CAPTURE_RUN) != 0u) {
+                free(key);
+                free(value);
+                return ASX_E_INVALID_ARGUMENT;
+            }
             prov->capture_run_id = value;
             seen |= ASX_PROV_CAPTURE_RUN;
         } else {
@@ -1497,45 +1532,117 @@ asx_status asx_codec_decode_fixture_json(const char *json, asx_canonical_fixture
 
         if (asx_codec_key_equals(key, "codec")) {
             char *codec_text = NULL;
-            st = asx_codec_json_decode_string(scan, &scan, &codec_text);
-            if (st == ASX_OK) {
-                st = asx_codec_kind_parse(codec_text, &parsed.codec);
+            if ((seen & ASX_F_CODEC) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_string(scan, &scan, &codec_text);
+                if (st == ASX_OK) {
+                    st = asx_codec_kind_parse(codec_text, &parsed.codec);
+                }
+                if (st == ASX_OK) {
+                    seen |= ASX_F_CODEC;
+                }
             }
             free(codec_text);
-            seen |= ASX_F_CODEC;
         } else if (asx_codec_key_equals(key, "expected_error_codes")) {
-            st = asx_codec_capture_raw_json(scan, &scan, &parsed.expected_error_codes_json);
-            seen |= ASX_F_EXPECTED_ERROR_CODES;
+            if ((seen & ASX_F_EXPECTED_ERROR_CODES) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_capture_raw_json(scan, &scan, &parsed.expected_error_codes_json);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_EXPECTED_ERROR_CODES;
+                }
+            }
         } else if (asx_codec_key_equals(key, "expected_events")) {
-            st = asx_codec_capture_raw_json(scan, &scan, &parsed.expected_events_json);
-            seen |= ASX_F_EXPECTED_EVENTS;
+            if ((seen & ASX_F_EXPECTED_EVENTS) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_capture_raw_json(scan, &scan, &parsed.expected_events_json);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_EXPECTED_EVENTS;
+                }
+            }
         } else if (asx_codec_key_equals(key, "expected_final_snapshot")) {
-            st = asx_codec_capture_raw_json(scan, &scan, &parsed.expected_final_snapshot_json);
-            seen |= ASX_F_EXPECTED_FINAL_SNAPSHOT;
+            if ((seen & ASX_F_EXPECTED_FINAL_SNAPSHOT) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_capture_raw_json(scan, &scan, &parsed.expected_final_snapshot_json);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_EXPECTED_FINAL_SNAPSHOT;
+                }
+            }
         } else if (asx_codec_key_equals(key, "fixture_schema_version")) {
-            st = asx_codec_json_decode_string(scan, &scan, &parsed.fixture_schema_version);
-            seen |= ASX_F_FIXTURE_SCHEMA_VERSION;
+            if ((seen & ASX_F_FIXTURE_SCHEMA_VERSION) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_string(scan, &scan, &parsed.fixture_schema_version);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_FIXTURE_SCHEMA_VERSION;
+                }
+            }
         } else if (asx_codec_key_equals(key, "input")) {
-            st = asx_codec_capture_raw_json(scan, &scan, &parsed.input_json);
-            seen |= ASX_F_INPUT;
+            if ((seen & ASX_F_INPUT) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_capture_raw_json(scan, &scan, &parsed.input_json);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_INPUT;
+                }
+            }
         } else if (asx_codec_key_equals(key, "profile")) {
-            st = asx_codec_json_decode_string(scan, &scan, &parsed.profile);
-            seen |= ASX_F_PROFILE;
+            if ((seen & ASX_F_PROFILE) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_string(scan, &scan, &parsed.profile);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_PROFILE;
+                }
+            }
         } else if (asx_codec_key_equals(key, "provenance")) {
-            st = asx_codec_decode_provenance_json(scan, &scan, &parsed.provenance);
-            seen |= ASX_F_PROVENANCE;
+            if ((seen & ASX_F_PROVENANCE) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_decode_provenance_json(scan, &scan, &parsed.provenance);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_PROVENANCE;
+                }
+            }
         } else if (asx_codec_key_equals(key, "scenario_dsl_version")) {
-            st = asx_codec_json_decode_string(scan, &scan, &parsed.scenario_dsl_version);
-            seen |= ASX_F_SCENARIO_DSL_VERSION;
+            if ((seen & ASX_F_SCENARIO_DSL_VERSION) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_string(scan, &scan, &parsed.scenario_dsl_version);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_SCENARIO_DSL_VERSION;
+                }
+            }
         } else if (asx_codec_key_equals(key, "scenario_id")) {
-            st = asx_codec_json_decode_string(scan, &scan, &parsed.scenario_id);
-            seen |= ASX_F_SCENARIO_ID;
+            if ((seen & ASX_F_SCENARIO_ID) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_string(scan, &scan, &parsed.scenario_id);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_SCENARIO_ID;
+                }
+            }
         } else if (asx_codec_key_equals(key, "seed")) {
-            st = asx_codec_json_decode_u64(scan, &scan, &parsed.seed);
-            seen |= ASX_F_SEED;
+            if ((seen & ASX_F_SEED) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_u64(scan, &scan, &parsed.seed);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_SEED;
+                }
+            }
         } else if (asx_codec_key_equals(key, "semantic_digest")) {
-            st = asx_codec_json_decode_string(scan, &scan, &parsed.semantic_digest);
-            seen |= ASX_F_SEMANTIC_DIGEST;
+            if ((seen & ASX_F_SEMANTIC_DIGEST) != 0u) {
+                st = ASX_E_INVALID_ARGUMENT;
+            } else {
+                st = asx_codec_json_decode_string(scan, &scan, &parsed.semantic_digest);
+                if (st == ASX_OK) {
+                    seen |= ASX_F_SEMANTIC_DIGEST;
+                }
+            }
         } else {
             st = ASX_E_INVALID_ARGUMENT;
         }

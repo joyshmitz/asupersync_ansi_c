@@ -39,6 +39,7 @@ typedef struct {
     /* Two-phase accounting */
     uint32_t          reserved;     /* outstanding permits */
     uint32_t          next_token;   /* monotonic permit token */
+    uint32_t          permit_tokens[ASX_CHANNEL_MAX_CAPACITY]; /* 0 = free */
 } asx_channel_slot;
 
 static asx_channel_slot g_channels[ASX_MAX_CHANNELS];
@@ -87,6 +88,61 @@ static asx_channel_id channel_make_handle(uint16_t slot_idx, uint16_t gen)
     return asx_handle_pack(ASX_TYPE_CHANNEL, 0, index);
 }
 
+static int channel_token_find(const asx_channel_slot *s,
+                              uint32_t token,
+                              uint32_t *out_idx)
+{
+    uint32_t i;
+
+    if (token == 0u) return 0;
+
+    for (i = 0; i < ASX_CHANNEL_MAX_CAPACITY; i++) {
+        if (s->permit_tokens[i] == token) {
+            if (out_idx != NULL) {
+                *out_idx = i;
+            }
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static uint32_t channel_token_allocate(asx_channel_slot *s)
+{
+    uint32_t token;
+
+    /* token 0 is reserved as "invalid / free-slot marker" */
+    token = s->next_token;
+    if (token == 0u) token = 1u;
+
+    while (channel_token_find(s, token, NULL)) {
+        token++;
+        if (token == 0u) token = 1u;
+    }
+
+    s->next_token = token + 1u;
+    if (s->next_token == 0u) s->next_token = 1u;
+
+    return token;
+}
+
+static asx_status channel_token_consume(asx_channel_slot *s, uint32_t token)
+{
+    uint32_t idx;
+
+    if (!channel_token_find(s, token, &idx)) {
+        return ASX_E_INVALID_STATE;
+    }
+
+    s->permit_tokens[idx] = 0u;
+    if (s->reserved > 0u) {
+        s->reserved--;
+    }
+
+    return ASX_OK;
+}
+
 /* ------------------------------------------------------------------ */
 /* Channel lifecycle                                                  */
 /* ------------------------------------------------------------------ */
@@ -121,6 +177,7 @@ asx_status asx_channel_create(asx_region_id region,
             s->reserved    = 0;
             s->next_token  = 1;
             memset(s->queue, 0, sizeof(s->queue));
+            memset(s->permit_tokens, 0, sizeof(s->permit_tokens));
 
             g_channel_count++;
             *out_id = channel_make_handle(i, s->generation);
@@ -272,10 +329,26 @@ asx_status asx_channel_try_reserve(asx_channel_id id,
         return ASX_E_CHANNEL_FULL;
     }
 
-    s->reserved++;
-    out->channel_id = id;
-    out->token = s->next_token++;
-    out->consumed = 0;
+    {
+        uint32_t permit_idx;
+        uint32_t token = channel_token_allocate(s);
+        int found = 0;
+        for (permit_idx = 0; permit_idx < ASX_CHANNEL_MAX_CAPACITY; permit_idx++) {
+            if (s->permit_tokens[permit_idx] == 0u) {
+                s->permit_tokens[permit_idx] = token;
+                found = 1;
+                out->channel_id = id;
+                out->token = token;
+                out->consumed = 0;
+                s->reserved++;
+                break;
+            }
+        }
+        if (!found) {
+            return ASX_E_RESOURCE_EXHAUSTED;
+        }
+    }
+
     return ASX_OK;
 }
 
@@ -302,8 +375,10 @@ asx_status asx_send_permit_send(asx_send_permit *permit, uint64_t value)
         return st;
     }
 
-    if (s->reserved > 0) {
-        s->reserved--;
+    st = channel_token_consume(s, permit->token);
+    if (st != ASX_OK) {
+        permit->consumed = 1;
+        return st;
     }
 
     permit->consumed = 1;
@@ -344,9 +419,7 @@ void asx_send_permit_abort(asx_send_permit *permit)
         return;
     }
 
-    if (s->reserved > 0) {
-        s->reserved--;
-    }
+    (void)channel_token_consume(s, permit->token);
 }
 
 /* ------------------------------------------------------------------ */
@@ -401,6 +474,7 @@ void asx_channel_reset(void)
         g_channels[i].reserved   = 0;
         g_channels[i].next_token = 1;
         memset(g_channels[i].queue, 0, sizeof(g_channels[i].queue));
+        memset(g_channels[i].permit_tokens, 0, sizeof(g_channels[i].permit_tokens));
     }
     g_channel_count = 0;
 }

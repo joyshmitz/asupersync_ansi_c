@@ -506,6 +506,48 @@ TEST(double_send_same_permit)
     ASSERT_EQ(asx_send_permit_send(&p, 2), ASX_E_INVALID_STATE);
 }
 
+TEST(forged_permit_send_rejected)
+{
+    asx_channel_id ch;
+    asx_send_permit forged;
+    uint32_t len;
+    uint32_t res;
+    setup();
+    ASSERT_EQ(asx_channel_create(g_rid, 4, &ch), ASX_OK);
+
+    forged.channel_id = ch;
+    forged.token = 0xC0FFEEu;
+    forged.consumed = 0;
+
+    ASSERT_EQ(asx_send_permit_send(&forged, 123u), ASX_E_INVALID_STATE);
+    ASSERT_EQ(forged.consumed, 1);
+    ASSERT_EQ(asx_channel_queue_len(ch, &len), ASX_OK);
+    ASSERT_EQ(len, 0u);
+    ASSERT_EQ(asx_channel_reserved_count(ch, &res), ASX_OK);
+    ASSERT_EQ(res, 0u);
+}
+
+TEST(stale_permit_copy_cannot_send)
+{
+    asx_channel_id ch;
+    asx_send_permit original;
+    asx_send_permit stale_copy;
+    uint32_t len;
+    uint32_t res;
+    setup();
+    ASSERT_EQ(asx_channel_create(g_rid, 4, &ch), ASX_OK);
+
+    ASSERT_EQ(asx_channel_try_reserve(ch, &original), ASX_OK);
+    stale_copy = original;
+    asx_send_permit_abort(&original);
+
+    ASSERT_EQ(asx_send_permit_send(&stale_copy, 999u), ASX_E_INVALID_STATE);
+    ASSERT_EQ(asx_channel_queue_len(ch, &len), ASX_OK);
+    ASSERT_EQ(len, 0u);
+    ASSERT_EQ(asx_channel_reserved_count(ch, &res), ASX_OK);
+    ASSERT_EQ(res, 0u);
+}
+
 /* -------------------------------------------------------------------
  * Reset
  * ------------------------------------------------------------------- */
@@ -575,6 +617,8 @@ int main(void)
     RUN_TEST(reserve_null_out);
     RUN_TEST(send_null_permit);
     RUN_TEST(double_send_same_permit);
+    RUN_TEST(forged_permit_send_rejected);
+    RUN_TEST(stale_permit_copy_cannot_send);
 
     RUN_TEST(reset_clears_all);
 

@@ -264,13 +264,20 @@ uint64_t asx_adaptive_ledger_digest(void)
     for (i = 0; i < readable; i++) {
         const asx_adaptive_ledger_entry *e =
             &g_ledger[(start + i) % ASX_ADAPTIVE_LEDGER_DEPTH];
-        const unsigned char *bytes = (const unsigned char *)&e->decision;
-        size_t j;
-        /* Hash the decision struct bytes */
-        for (j = 0; j < sizeof(e->decision); j++) {
-            hash ^= bytes[j];
-            hash *= 1099511628211ULL;
-        }
+        /* Hash individual fields to avoid padding-dependent digests.
+         * Raw struct hashing via sizeof() includes padding bytes which
+         * differ across platforms/compilers, breaking determinism. */
+#define LEDGER_HASH_U32(val) do { \
+            hash ^= (uint64_t)(val); \
+            hash *= 1099511628211ULL; \
+        } while (0)
+        LEDGER_HASH_U32(e->decision.selected);
+        LEDGER_HASH_U32(e->decision.expected_loss_fp16);
+        LEDGER_HASH_U32(e->decision.counterfactual);
+        LEDGER_HASH_U32(e->decision.cf_loss_fp16);
+        LEDGER_HASH_U32((uint32_t)e->decision.used_fallback);
+        LEDGER_HASH_U32(e->decision.confidence_fp32);
+#undef LEDGER_HASH_U32
         /* Include sequence */
         hash ^= (uint64_t)e->sequence;
         hash *= 1099511628211ULL;
