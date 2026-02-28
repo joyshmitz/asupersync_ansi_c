@@ -133,7 +133,7 @@ for entry in "${MATRIX[@]}"; do
   IFS=':' read -r triplet compiler resource_class <<<"$entry"
   ((total += 1))
   output_log="$artifact_root/${run_id}-${triplet}.log"
-  make_cmd=(make -C "$REPO_ROOT" build "TARGET=$triplet" "PROFILE=EMBEDDED_ROUTER" "CODEC=BIN" "DETERMINISTIC=1" "CFLAGS=-DASX_CLASS_${resource_class}")
+  make_cmd=(env "ASX_E2E_RESOURCE_CLASS=$resource_class" make -C "$REPO_ROOT" build "TARGET=$triplet" "PROFILE=EMBEDDED_ROUTER" "CODEC=BIN" "DETERMINISTIC=1")
 
   if [[ "$dry_run" == "1" ]]; then
     emit_jsonl "$log_file" "$run_id" "$triplet" "$compiler" "$resource_class" "planned" 0 \
@@ -169,8 +169,7 @@ for entry in "${MATRIX[@]}"; do
         --profile "EMBEDDED_ROUTER" \
         --resource-class "$resource_class" \
         --run-id "$run_id" \
-        --out-dir "$artifact_root" \
-        --extra-cflags "-DASX_CLASS_${resource_class}" 2>"$layout_err_file")"; then
+        --out-dir "$artifact_root" 2>"$layout_err_file")"; then
       layout_status="pass"
       printf '%s\t%s\n' "$triplet" "${layout_report%.json}.kv" >>"$layout_index_file"
     else

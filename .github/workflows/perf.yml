@@ -11,8 +11,13 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   CI: 1
+  ASX_CI_RUN_TAG: "${{ github.run_id }}-${{ github.run_attempt }}"
+  ASX_CI_ARTIFACT_ROOT: build/ci-manifests
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -30,20 +35,88 @@ jobs:
           sudo apt-get install -y -qq jq
 
       - name: Build (release)
+        id: build_release
         run: make release
 
       - name: Run benchmarks
+        id: run_bench
         run: make bench
 
       - name: Run benchmarks (JSON output)
-        run: make bench-json > bench-results.json 2>&1 || true
+        id: run_bench_json
+        run: make bench-json > bench-results.json
+
+      - name: Validate benchmark artifacts
+        id: validate_manifest
+        run: |
+          if [ ! -s bench-results.json ]; then
+            echo "[asx] perf: FAIL — bench-results.json missing or empty" >&2
+            exit 1
+          fi
+
+      - name: Emit perf lane manifest
+        if: always()
+        run: |
+          mkdir -p "${ASX_CI_ARTIFACT_ROOT}"
+          lane="perf-tail-deadline"
+          first_failure=""
+          rerun=""
+
+          if [ "${{ steps.build_release.outcome }}" = "failure" ]; then
+            first_failure="release-build"
+            rerun="make release"
+          elif [ "${{ steps.run_bench.outcome }}" = "failure" ]; then
+            first_failure="bench"
+            rerun="make bench"
+          elif [ "${{ steps.run_bench_json.outcome }}" = "failure" ]; then
+            first_failure="bench-json"
+            rerun="make bench-json > bench-results.json"
+          elif [ "${{ steps.validate_manifest.outcome }}" = "failure" ]; then
+            first_failure="validate-bench-artifacts"
+            rerun="ls -l bench-results.json"
+          fi
+
+          status="pass"
+          if [ -n "$first_failure" ]; then
+            status="fail"
+          fi
+
+          jq -n \
+            --arg lane "$lane" \
+            --arg status "$status" \
+            --arg run_tag "${{ env.ASX_CI_RUN_TAG }}" \
+            --arg workflow "${{ github.workflow }}" \
+            --arg sha "${{ github.sha }}" \
+            --arg ref "${{ github.ref }}" \
+            --arg build_outcome "${{ steps.build_release.outcome }}" \
+            --arg bench_outcome "${{ steps.run_bench.outcome }}" \
+            --arg bench_json_outcome "${{ steps.run_bench_json.outcome }}" \
+            --arg validate_outcome "${{ steps.validate_manifest.outcome }}" \
+            --arg first_failure "$first_failure" \
+            --arg rerun "$rerun" \
+            '{
+              lane: $lane,
+              status: $status,
+              run_tag: $run_tag,
+              workflow: $workflow,
+              sha: $sha,
+              ref: $ref,
+              steps: [
+                {id: "release-build", outcome: $build_outcome, rerun: "make release"},
+                {id: "bench", outcome: $bench_outcome, rerun: "make bench"},
+                {id: "bench-json", outcome: $bench_json_outcome, rerun: "make bench-json > bench-results.json"},
+                {id: "validate-bench-artifacts", outcome: $validate_outcome, rerun: "ls -l bench-results.json"}
+              ],
+              first_failure: (if $first_failure == "" then null else {step: $first_failure, rerun: $rerun} end)
+            }' > "${ASX_CI_ARTIFACT_ROOT}/${lane}.manifest.json"
 
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: perf-results-${{ github.sha }}
+          name: perf-tail-deadline-${{ env.ASX_CI_RUN_TAG }}
           path: |
             bench-results.json
             build/bench/
+            ${{ env.ASX_CI_ARTIFACT_ROOT }}/perf-tail-deadline.manifest.json
           retention-days: 30

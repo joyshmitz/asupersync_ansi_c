@@ -132,7 +132,9 @@ RUNTIME_SRC := \
 	src/runtime/hft_instrument.c \
 	src/runtime/automotive_instrument.c \
 	src/runtime/overload_catalog.c \
-	src/runtime/parallel.c
+	src/runtime/parallel.c \
+	src/runtime/adapter.c \
+	src/runtime/vertical_adapter.c
 
 CHANNEL_SRC := \
 	src/channel/mpsc.c
@@ -208,20 +210,28 @@ E2E_ALL_SCRIPTS := \
 	$(E2E_SCRIPT_DIR)/hft_microburst.sh \
 	$(E2E_SCRIPT_DIR)/automotive_watchdog.sh \
 	$(E2E_SCRIPT_DIR)/continuity.sh \
-	$(E2E_SCRIPT_DIR)/continuity_restart.sh
+	$(E2E_SCRIPT_DIR)/continuity_restart.sh \
+	$(E2E_SCRIPT_DIR)/router_storm.sh \
+	$(E2E_SCRIPT_DIR)/market_open_burst.sh \
+	$(E2E_SCRIPT_DIR)/automotive_fault_burst.sh \
+	$(E2E_SCRIPT_DIR)/openwrt_package.sh
 
 E2E_VERTICAL_SCRIPTS := \
 	$(E2E_SCRIPT_DIR)/hft_microburst.sh \
 	$(E2E_SCRIPT_DIR)/automotive_watchdog.sh \
 	$(E2E_SCRIPT_DIR)/continuity.sh \
-	$(E2E_SCRIPT_DIR)/continuity_restart.sh
+	$(E2E_SCRIPT_DIR)/continuity_restart.sh \
+	$(E2E_SCRIPT_DIR)/router_storm.sh \
+	$(E2E_SCRIPT_DIR)/market_open_burst.sh \
+	$(E2E_SCRIPT_DIR)/automotive_fault_burst.sh
 
 # ===================================================================
 # PRIMARY TARGETS — map 1:1 to quality gate commands
 # ===================================================================
 
 .PHONY: all build clean install uninstall
-.PHONY: format-check lint lint-docs lint-checkpoint
+.PHONY: format-check lint lint-docs lint-checkpoint lint-anti-butchering lint-evidence lint-semantic-delta lint-static-analysis
+.PHONY: model-check
 .PHONY: test test-unit test-invariants test-e2e test-e2e-vertical
 .PHONY: conformance codec-equivalence profile-parity
 .PHONY: fuzz-smoke ci-embedded-matrix
@@ -281,6 +291,8 @@ lint:
 		cppcheck --enable=warning,performance,portability --std=c99 --error-exitcode=1 \
 		         --suppress=missingIncludeSystem \
 		         --suppress=unusedFunction \
+		         --suppress=normalCheckLevelMaxBranches \
+		         --suppress=toomanyconfigs \
 		         -I include src/ && \
 		echo "[asx] lint: PASS (cppcheck)" || \
 		{ echo "[asx] lint: FAIL"; exit 1; }; \
@@ -308,6 +320,56 @@ lint-docs:
 lint-checkpoint:
 	@echo "[asx] lint-checkpoint: checking kernel loop checkpoint coverage..."
 	@./tools/ci/check_checkpoint_coverage.sh
+
+# ---------------------------------------------------------------------------
+# lint-anti-butchering — semantic-sensitive proof-block gate (bd-66l.7)
+# ---------------------------------------------------------------------------
+lint-anti-butchering:
+	@echo "[asx] lint-anti-butchering: checking guarantee impact proof block..."
+	@./tools/ci/check_anti_butchering.sh
+
+# ---------------------------------------------------------------------------
+# lint-evidence — per-bead evidence linkage gate (bd-66l.9)
+# ---------------------------------------------------------------------------
+lint-evidence:
+	@echo "[asx] lint-evidence: checking per-bead evidence linkage..."
+	@if [ -x tools/ci/check_evidence_linkage.sh ]; then \
+		tools/ci/check_evidence_linkage.sh; \
+	else \
+		echo "[asx] lint-evidence: SKIP (runner not found)"; \
+	fi
+
+# ---------------------------------------------------------------------------
+# lint-static-analysis — section 10.7 static analysis gate (bd-66l.10)
+# ---------------------------------------------------------------------------
+lint-static-analysis:
+	@echo "[asx] lint-static-analysis: section 10.7 gates..."
+	@if [ -x tools/ci/run_static_analysis.sh ]; then \
+		tools/ci/run_static_analysis.sh; \
+	else \
+		echo "[asx] lint-static-analysis: SKIP (runner not found)"; \
+	fi
+
+# ---------------------------------------------------------------------------
+# lint-semantic-delta — semantic delta budget gate (bd-66l.3)
+# ---------------------------------------------------------------------------
+lint-semantic-delta:
+	@echo "[asx] lint-semantic-delta: checking semantic delta budget..."
+	@./tools/ci/check_semantic_delta_budget.sh
+
+# ---------------------------------------------------------------------------
+# model-check — bounded model-check for state machine properties (bd-66l.10)
+# ---------------------------------------------------------------------------
+MODEL_CHECK_SRC := tests/invariant/model_check/test_bounded_model.c
+MODEL_CHECK_BIN := $(BUILD_DIR)/test/invariant/model_check/test_bounded_model
+
+$(MODEL_CHECK_BIN): $(MODEL_CHECK_SRC) $(LIB_A) | test-dirs
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
+
+model-check: $(MODEL_CHECK_BIN)
+	@echo "[asx] model-check: bounded state machine verification..."
+	@$(MODEL_CHECK_BIN) && echo "  PASS test_bounded_model" || { echo "  FAIL test_bounded_model"; exit 1; }
 
 # ---------------------------------------------------------------------------
 # test — run all test suites
@@ -358,6 +420,14 @@ $(TEST_DIR)/unit/runtime/test_automotive_instrument: tests/unit/runtime/test_aut
 # Overload catalog test needs extra sources (bd-j4m.8)
 $(TEST_DIR)/unit/runtime/test_overload_catalog: tests/unit/runtime/test_overload_catalog.c src/runtime/overload_catalog.c src/runtime/hft_instrument.c $(LIB_A) | test-dirs
 	$(CC) $(TEST_CFLAGS) -o $@ $< src/runtime/overload_catalog.c src/runtime/hft_instrument.c $(LIB_A) $(ALL_LDFLAGS)
+
+# Adapter test needs extra sources (bd-j4m.5)
+$(TEST_DIR)/unit/runtime/test_adapter: tests/unit/runtime/test_adapter.c src/runtime/adapter.c src/runtime/automotive_instrument.c src/runtime/hft_instrument.c src/runtime/overload_catalog.c $(LIB_A) | test-dirs
+	$(CC) $(TEST_CFLAGS) -o $@ $< src/runtime/adapter.c src/runtime/automotive_instrument.c src/runtime/hft_instrument.c src/runtime/overload_catalog.c $(LIB_A) $(ALL_LDFLAGS)
+
+# Vertical adapter test needs extra sources (bd-j4m.5)
+$(TEST_DIR)/unit/runtime/test_vertical_adapter: tests/unit/runtime/test_vertical_adapter.c src/runtime/vertical_adapter.c src/runtime/automotive_instrument.c src/runtime/hft_instrument.c src/runtime/overload_catalog.c $(LIB_A) | test-dirs
+	$(CC) $(TEST_CFLAGS) -o $@ $< src/runtime/vertical_adapter.c src/runtime/automotive_instrument.c src/runtime/hft_instrument.c src/runtime/overload_catalog.c $(LIB_A) $(ALL_LDFLAGS)
 
 # Link individual unit tests
 $(TEST_DIR)/unit/%: tests/unit/%.c $(LIB_A) | test-dirs
@@ -436,6 +506,8 @@ test-e2e-vertical:
 # profile/codec matrix, per-family results, and first-failure triage.
 # Maps to hard gates: GATE-E2E-LIFECYCLE, GATE-E2E-CODEC,
 # GATE-E2E-ROBUSTNESS, GATE-E2E-VERTICAL-{HFT,AUTO}, GATE-E2E-CONTINUITY.
+# Plus deployment/package gates: GATE-E2E-DEPLOY-{ROUTER,HFT,AUTO},
+# GATE-E2E-PACKAGE.
 # ---------------------------------------------------------------------------
 test-e2e-suite: $(LIB_A)
 	@chmod +x $(E2E_SCRIPT_DIR)/run_all.sh $(E2E_SCRIPT_DIR)/harness.sh $(E2E_ALL_SCRIPTS) 2>/dev/null || true
@@ -447,7 +519,8 @@ $(TEST_DIR)/invariant/%: tests/invariant/%.c $(LIB_A) | test-dirs
 test-dirs:
 	@mkdir -p $(TEST_DIR)/unit/core $(TEST_DIR)/unit/runtime \
 	          $(TEST_DIR)/unit/channel $(TEST_DIR)/unit/time \
-	          $(TEST_DIR)/invariant/lifecycle $(TEST_DIR)/invariant/quiescence
+	          $(TEST_DIR)/invariant/lifecycle $(TEST_DIR)/invariant/quiescence \
+	          $(TEST_DIR)/invariant/model_check
 
 # ---------------------------------------------------------------------------
 # bench — performance benchmark suite (bd-1md.6)
@@ -710,10 +783,10 @@ qemu-smoke:
 # check — combined gate for PR/push CI
 # ---------------------------------------------------------------------------
 .PHONY: check check-ci
-check: format-check lint lint-docs lint-checkpoint build test
+check: format-check lint lint-docs lint-checkpoint lint-anti-butchering lint-evidence lint-semantic-delta lint-static-analysis build test model-check
 
 check-ci: CI=1
-check-ci: format-check lint lint-checkpoint build test test-e2e-vertical conformance codec-equivalence profile-parity fuzz-smoke ci-embedded-matrix
+check-ci: format-check lint lint-checkpoint lint-anti-butchering lint-evidence lint-semantic-delta lint-static-analysis build test model-check test-e2e-vertical conformance codec-equivalence profile-parity fuzz-smoke ci-embedded-matrix
 
 # ---------------------------------------------------------------------------
 # clean
@@ -734,6 +807,9 @@ help:
 	@echo "  lint               Static analysis gate"
 	@echo "  lint-docs          Public API documentation coverage gate"
 	@echo "  lint-checkpoint    Checkpoint coverage gate for kernel loops"
+	@echo "  lint-anti-butchering Anti-butchering proof-block gate"
+	@echo "  lint-evidence        Per-bead evidence linkage gate"
+	@echo "  lint-semantic-delta  Semantic delta budget gate"
 	@echo "  test               Run all tests (unit + invariant)"
 	@echo "  test-unit          Unit tests per module"
 	@echo "  test-invariants    Lifecycle invariant tests"

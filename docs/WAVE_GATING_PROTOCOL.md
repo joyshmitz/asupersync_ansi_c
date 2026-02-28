@@ -25,6 +25,36 @@ These apply to every wave:
 4. All parity/conformance artifacts must reference pinned baseline provenance fields.
 5. Gate status is binary: `pass` or `fail`. No "soft pass" for mandatory gates.
 
+### Semantic Delta Exception Ledger
+
+Approved semantic-delta exceptions are recorded in
+`docs/SEMANTIC_DELTA_EXCEPTIONS.json` as an array of records:
+
+```json
+[
+  {
+    "id": "EXC-2026-03-01-001",
+    "status": "approved",
+    "mode": "conformance",
+    "scenario_ids": ["scenario-a", "scenario-b"],
+    "budget": 2,
+    "approver": "owner-name",
+    "rationale": "short justification",
+    "expires_on": "2026-03-31"
+  }
+]
+```
+
+Required fields for any active exception (`status=approved`):
+- `id`, `mode` (`conformance|codec-equivalence|profile-parity|any`),
+- `scenario_ids` (fixture-scoped list or `["*"]`),
+- `budget` (integer >= 0),
+- `approver`,
+- `rationale`.
+
+The semantic-delta gate (`make conformance`) loads this ledger and emits
+`build/conformance/semantic_delta_<run_id>.json`.
+
 ## 3. Gate Model
 
 Each wave has two gate types:

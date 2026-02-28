@@ -63,7 +63,15 @@ Required fields:
 4. proof artifacts added/updated,
 5. fallback/safe-mode behavior,
 6. ordering/isomorphism note for deterministic mode,
-7. semantic delta budget declaration (`0` unless explicitly approved).
+7. semantic delta budget declaration (`0` unless explicitly approved),
+8. traceability refs (`TRC-*`) tying the change to execution/evidence rows,
+9. artifact links (concrete paths for review evidence).
+
+If `semantic delta budget` is non-zero, the block must also include:
+
+- `exception id` (stable decision record ID),
+- `exception rationale` (why non-zero is required),
+- `exception approver` (owner/reviewer identity).
 
 Template:
 
@@ -76,6 +84,8 @@ Guarantee Impact:
 - fallback mode: <safe-mode behavior>
 - deterministic isomorphism note: <ordering/tie-break impact>
 - semantic delta budget: 0
+- traceability refs: TRC-GSM-001, TRC-BUILD-001
+- artifact links: build/conformance/anti_butcher_<run_id>.json, tools/ci/artifacts/conformance/<run_id>.summary.json
 ```
 
 ## 5. Automatic Rejection Conditions
@@ -88,7 +98,9 @@ A change must be rejected if any condition is true:
 4. changes cancellation/exhaustion semantics without corresponding provenance/fixture updates,
 5. relies on profile-specific behavior fork that changes semantic digest on shared fixture sets,
 6. marks a kernel-scope row as deferred without owner-approved scope change,
-7. claims performance wins while removing fallback/safe-mode behavior.
+7. claims performance wins while removing fallback/safe-mode behavior,
+8. omits traceability refs or artifact links for changed semantic-sensitive surfaces,
+9. declares non-zero semantic delta budget without explicit exception metadata.
 
 ## 6. Risky Optimization Rollback Expectations
 
@@ -118,3 +130,8 @@ This matrix is the authoritative substitution contract for:
 - `bd-2cw.*` runtime-kernel implementation and deterministic enforcement,
 - `bd-1md.*` fixture/conformance/fuzz verification rows,
 - `bd-66l.9` evidence-linkage enforcement in CI/closure notes.
+
+Primary enforcement gate:
+
+- `make lint-anti-butchering` (`tools/ci/check_anti_butchering.sh`)
+  produces `build/conformance/anti_butcher_<run_id>.json` and fails on missing proof-block metadata.

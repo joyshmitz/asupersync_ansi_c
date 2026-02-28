@@ -23,6 +23,9 @@ Environment:
   FAIL_ON_EMPTY_FIXTURES=1      fail when no fixture JSON files are present (default: 1)
   FAIL_ON_INCOMPLETE_PARITY=1   fail when parity mode has no comparable pairs (default: 1)
   FAIL_ON_MISSING_JQ=1          fail when jq is missing (default: 1)
+  ASX_SEMANTIC_DELTA_BUDGET=N   default semantic-delta budget (default: 0)
+  ASX_SEMANTIC_DELTA_EXCEPTION_FILE=<path>
+                                approved exception ledger (default: docs/SEMANTIC_DELTA_EXCEPTIONS.json)
   CONFORMANCE_CFLAGS="..."      override compile flags for smoke binary
 EOF
 }
@@ -57,6 +60,9 @@ FAIL_ON_INCOMPLETE_PARITY="${FAIL_ON_INCOMPLETE_PARITY:-1}"
 FAIL_ON_MISSING_JQ="${FAIL_ON_MISSING_JQ:-1}"
 BASELINE_FILE="$REPO_ROOT/docs/rust_baseline_inventory.json"
 SCHEMA_FILE="$REPO_ROOT/schemas/canonical_fixture.schema.json"
+SEMANTIC_DELTA_BUDGET_DEFAULT="${ASX_SEMANTIC_DELTA_BUDGET:-0}"
+SEMANTIC_DELTA_EXCEPTION_FILE="${ASX_SEMANTIC_DELTA_EXCEPTION_FILE:-$REPO_ROOT/docs/SEMANTIC_DELTA_EXCEPTIONS.json}"
+SEMANTIC_DELTA_ARTIFACT_DIR="$REPO_ROOT/build/conformance"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -698,17 +704,157 @@ jq -s \
   }' \
   "$REPORT_FILE" >"$SUMMARY_FILE"
 
+if [[ ! "$SEMANTIC_DELTA_BUDGET_DEFAULT" =~ ^[0-9]+$ ]]; then
+  echo "[asx] conformance[$MODE]: FAIL (ASX_SEMANTIC_DELTA_BUDGET must be an integer >= 0)" >&2
+  exit 2
+fi
+
+mkdir -p "$SEMANTIC_DELTA_ARTIFACT_DIR"
+SEMANTIC_DELTA_FILE="$SEMANTIC_DELTA_ARTIFACT_DIR/semantic_delta_${RUN_ID}.json"
+
+if [[ -s "$DIFF_FILE" ]]; then
+  semantic_delta_records_json="$(jq -sc '[.[] | select((.delta_classification // "none") != "harness_defect")]' "$DIFF_FILE")"
+  non_budgetable_records_json="$(jq -sc '[.[] | select((.delta_classification // "none") == "harness_defect")]' "$DIFF_FILE")"
+else
+  semantic_delta_records_json='[]'
+  non_budgetable_records_json='[]'
+fi
+
+semantic_delta_count="$(jq -r 'length' <<<"$semantic_delta_records_json")"
+non_budgetable_count="$(jq -r 'length' <<<"$non_budgetable_records_json")"
+changed_units_json="$(jq -c '[.[] | {kind,scenario_id,codec,profile,delta_classification,diagnostic}]' <<<"$semantic_delta_records_json")"
+impacted_scenarios_json="$(jq -c '[.[] | .scenario_id | select(. != "")] | unique' <<<"$semantic_delta_records_json")"
+
+allowed_budget="$SEMANTIC_DELTA_BUDGET_DEFAULT"
+matched_exceptions_json='[]'
+matched_exception_ids_json='[]'
+exception_file_status="not_found"
+
+if [[ -f "$SEMANTIC_DELTA_EXCEPTION_FILE" ]]; then
+  exception_file_status="loaded"
+  if ! jq empty "$SEMANTIC_DELTA_EXCEPTION_FILE" >/dev/null 2>&1; then
+    echo "[asx] conformance[$MODE]: FAIL (invalid semantic delta exception file JSON: $SEMANTIC_DELTA_EXCEPTION_FILE)" >&2
+    exit 1
+  fi
+
+  matched_exceptions_json="$(jq -c \
+    --arg mode "$MODE" \
+    --argjson impacted "$impacted_scenarios_json" \
+    'if type != "array" then [] else . end
+     | map(
+         select((.status // "") == "approved")
+         | select((.id // "") != "")
+         | select((.approver // "") != "")
+         | select((.budget // -1) | type == "number" and . >= 0)
+         | select((.mode // "any") == $mode or (.mode // "any") == "any")
+         | select((.scenario_ids // []) | type == "array")
+         | select(
+             if ($impacted | length) == 0 then
+               true
+             else
+               ((.scenario_ids | index("*")) != null)
+               or (($impacted - (.scenario_ids | map(tostring))) | length == 0)
+             end
+           )
+       )' \
+    "$SEMANTIC_DELTA_EXCEPTION_FILE")"
+
+  matched_budget="$(jq -r '[.[].budget] | if length == 0 then -1 else max end' <<<"$matched_exceptions_json")"
+  if [[ "$matched_budget" =~ ^-?[0-9]+$ ]] && [[ "$matched_budget" -ge 0 ]] && [[ "$matched_budget" -gt "$allowed_budget" ]]; then
+    allowed_budget="$matched_budget"
+  fi
+  matched_exception_ids_json="$(jq -c '[.[].id]' <<<"$matched_exceptions_json")"
+fi
+
+semantic_delta_pass=true
+semantic_delta_diagnostic="semantic delta within budget"
+if [[ "$non_budgetable_count" -gt 0 ]]; then
+  semantic_delta_pass=false
+  semantic_delta_diagnostic="non-budgetable conformance failures detected"
+elif [[ "$semantic_delta_count" -gt "$allowed_budget" ]]; then
+  semantic_delta_pass=false
+  semantic_delta_diagnostic="semantic delta budget exceeded"
+fi
+
+jq -n \
+  --arg run_id "$RUN_ID" \
+  --arg mode "$MODE" \
+  --arg exception_file "$SEMANTIC_DELTA_EXCEPTION_FILE" \
+  --arg exception_file_status "$exception_file_status" \
+  --arg diagnostic "$semantic_delta_diagnostic" \
+  --arg report_file "$REPORT_FILE" \
+  --arg summary_file "$SUMMARY_FILE" \
+  --arg diff_file "$DIFF_FILE" \
+  --arg artifact_file "$SEMANTIC_DELTA_FILE" \
+  --argjson semantic_delta_pass "$semantic_delta_pass" \
+  --argjson semantic_delta_count "$semantic_delta_count" \
+  --argjson non_budgetable_count "$non_budgetable_count" \
+  --argjson default_budget "$SEMANTIC_DELTA_BUDGET_DEFAULT" \
+  --argjson allowed_budget "$allowed_budget" \
+  --argjson impacted_scenarios "$impacted_scenarios_json" \
+  --argjson changed_units "$changed_units_json" \
+  --argjson matched_exceptions "$matched_exceptions_json" \
+  --argjson matched_exception_ids "$matched_exception_ids_json" \
+  '{
+    kind: "semantic_delta_budget",
+    run_id: $run_id,
+    mode: $mode,
+    semantic_delta_pass: $semantic_delta_pass,
+    semantic_delta_count: $semantic_delta_count,
+    non_budgetable_fail_count: $non_budgetable_count,
+    default_budget: $default_budget,
+    allowed_budget: $allowed_budget,
+    impacted_scenarios: $impacted_scenarios,
+    changed_semantic_units: $changed_units,
+    matched_exceptions: $matched_exceptions,
+    matched_exception_ids: $matched_exception_ids,
+    exception_file: $exception_file,
+    exception_file_status: $exception_file_status,
+    diagnostic: $diagnostic,
+    evidence: {
+      report_file: $report_file,
+      summary_file: $summary_file,
+      diff_file: $diff_file
+    }
+  }' >"$SEMANTIC_DELTA_FILE"
+
+jq \
+  --arg semantic_delta_artifact "$SEMANTIC_DELTA_FILE" \
+  --argjson semantic_delta_count "$semantic_delta_count" \
+  --argjson non_budgetable_count "$non_budgetable_count" \
+  --argjson semantic_delta_budget_default "$SEMANTIC_DELTA_BUDGET_DEFAULT" \
+  --argjson semantic_delta_budget_allowed "$allowed_budget" \
+  --argjson semantic_delta_pass "$semantic_delta_pass" \
+  --argjson semantic_delta_exception_ids "$matched_exception_ids_json" \
+  '. + {
+    semantic_delta_count: $semantic_delta_count,
+    non_budgetable_fail_count: $non_budgetable_count,
+    semantic_delta_budget_default: $semantic_delta_budget_default,
+    semantic_delta_budget_allowed: $semantic_delta_budget_allowed,
+    semantic_delta_pass: $semantic_delta_pass,
+    semantic_delta_exception_ids: $semantic_delta_exception_ids,
+    semantic_delta_artifact: $semantic_delta_artifact
+  }' \
+  "$SUMMARY_FILE" >"${SUMMARY_FILE}.tmp"
+mv "${SUMMARY_FILE}.tmp" "$SUMMARY_FILE"
+
 fail_count="$(jq -r '.fail' "$SUMMARY_FILE")"
 fixture_count="$(jq -r '.fixture_records' "$SUMMARY_FILE")"
 parity_count="$(jq -r '.parity_records' "$SUMMARY_FILE")"
 comparable_parity_count="$(jq -r '.comparable_parity_records' "$SUMMARY_FILE")"
 diff_count="$(jq -r '.diff_records' "$SUMMARY_FILE")"
+semantic_delta_pass_value="$(jq -r '.semantic_delta_pass' "$SUMMARY_FILE")"
+semantic_delta_count_value="$(jq -r '.semantic_delta_count' "$SUMMARY_FILE")"
+semantic_delta_budget_allowed_value="$(jq -r '.semantic_delta_budget_allowed' "$SUMMARY_FILE")"
+non_budgetable_count_value="$(jq -r '.non_budgetable_fail_count' "$SUMMARY_FILE")"
 
 echo "[asx] conformance[$MODE]: report=$REPORT_FILE summary=$SUMMARY_FILE" >&2
 echo "[asx] conformance[$MODE]: fixture_records=$fixture_count parity_records=$parity_count comparable_parity_records=$comparable_parity_count fail=$fail_count diff_records=$diff_count" >&2
+echo "[asx] conformance[$MODE]: semantic_delta_count=$semantic_delta_count_value allowed_budget=$semantic_delta_budget_allowed_value non_budgetable_fail_count=$non_budgetable_count_value pass=$semantic_delta_pass_value artifact=$SEMANTIC_DELTA_FILE" >&2
 
 exit_code=0
-if [[ "$fail_count" -gt 0 ]]; then
+if [[ "$semantic_delta_pass_value" != "true" ]]; then
+  echo "[asx] conformance[$MODE]: FAIL (semantic delta budget gate)" >&2
   exit_code=1
 fi
 if [[ "$fixture_count" -eq 0 && "$FAIL_ON_EMPTY_FIXTURES" == "1" ]]; then
