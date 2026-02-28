@@ -298,6 +298,27 @@ TEST(timer_collect_respects_max_wakers) {
 }
 
 /* -------------------------------------------------------------------
+ * Test: zero-capacity collection still advances wheel time
+ * ------------------------------------------------------------------- */
+
+TEST(timer_collect_zero_capacity_advances_time) {
+    asx_timer_wheel *w = asx_timer_wheel_global();
+    asx_timer_handle h;
+    void *wakers[1];
+    uint32_t count;
+
+    asx_timer_wheel_reset(w);
+    asx_timer_set_max_duration(w, 1000);
+
+    ASSERT_EQ(asx_timer_register(w, 100, (void *)1, &h), ASX_OK);
+    count = asx_timer_collect_expired(w, 100, wakers, 0);
+    ASSERT_EQ(count, (uint32_t)0);
+
+    /* If collect() advanced current_time to 100, delta is 950 and should pass. */
+    ASSERT_EQ(asx_timer_register(w, 1050, (void *)2, &h), ASX_OK);
+}
+
+/* -------------------------------------------------------------------
  * Test: timer update (cancel + re-register)
  * ------------------------------------------------------------------- */
 
@@ -325,6 +346,20 @@ TEST(timer_update_cancels_old_and_registers_new) {
 
     /* Old handle should be stale */
     ASSERT_FALSE(asx_timer_cancel(w, &old_h));
+}
+
+TEST(timer_update_allows_null_old_handle) {
+    asx_timer_wheel *w = asx_timer_wheel_global();
+    asx_timer_handle h;
+    void *wakers[2];
+    uint32_t count;
+
+    asx_timer_wheel_reset(w);
+    ASSERT_EQ(asx_timer_update(w, NULL, 100, (void *)0xCAFE, &h), ASX_OK);
+
+    count = asx_timer_collect_expired(w, 100, wakers, 2);
+    ASSERT_EQ(count, (uint32_t)1);
+    ASSERT_EQ(wakers[0], (void *)0xCAFE);
 }
 
 /* -------------------------------------------------------------------
@@ -533,7 +568,9 @@ int main(void) {
     RUN_TEST(timer_slot_recycling_after_cancel);
     RUN_TEST(timer_duration_exceeded);
     RUN_TEST(timer_collect_respects_max_wakers);
+    RUN_TEST(timer_collect_zero_capacity_advances_time);
     RUN_TEST(timer_update_cancels_old_and_registers_new);
+    RUN_TEST(timer_update_allows_null_old_handle);
     RUN_TEST(timer_churn_register_cancel);
     RUN_TEST(timer_generation_increments_on_reuse);
     RUN_TEST(timer_zero_deadline_fires_immediately);

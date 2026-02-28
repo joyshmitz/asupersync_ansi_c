@@ -17,6 +17,21 @@
 #include <asx/core/ghost.h>
 #include "runtime_internal.h"
 
+static asx_status asx_region_obligations_resolved(asx_region_id id)
+{
+    uint32_t i;
+
+    for (i = 0; i < g_obligation_count; i++) {
+        if (!g_obligations[i].alive) continue;
+        if (g_obligations[i].region != id) continue;
+        if (g_obligations[i].state == ASX_OBLIGATION_RESERVED) {
+            return ASX_E_OBLIGATIONS_UNRESOLVED;
+        }
+    }
+
+    return ASX_OK;
+}
+
 /* -------------------------------------------------------------------
  * Quiescence check
  * ------------------------------------------------------------------- */
@@ -25,7 +40,6 @@ asx_status asx_quiescence_check(asx_region_id id)
 {
     asx_region_slot *r;
     asx_status st;
-    uint32_t i;
 
     st = asx_region_slot_lookup(id, &r);
     if (st != ASX_OK) return st;
@@ -38,18 +52,7 @@ asx_status asx_quiescence_check(asx_region_id id)
         return ASX_E_QUIESCENCE_TASKS_LIVE;
     }
 
-    /* Q3: All obligations in this region must be resolved (committed or
-     * aborted). An unresolved obligation blocks quiescence per the formal
-     * spec (QUIESCENCE_FINALIZATION_INVARIANTS.md §1.1). */
-    for (i = 0; i < g_obligation_count; i++) {
-        if (!g_obligations[i].alive) continue;
-        if (g_obligations[i].region != id) continue;
-        if (g_obligations[i].state == ASX_OBLIGATION_RESERVED) {
-            return ASX_E_OBLIGATIONS_UNRESOLVED;
-        }
-    }
-
-    return ASX_OK;
+    return asx_region_obligations_resolved(id);
 }
 
 /* -------------------------------------------------------------------
@@ -88,9 +91,8 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
     /* Step 2: Run scheduler to drain tasks */
     if (r->task_count > 0) {
         st = asx_scheduler_run(id, budget);
-        if (st != ASX_OK && st != ASX_E_POLL_BUDGET_EXHAUSTED) {
-            return st;
-        }
+        if (st == ASX_E_POLL_BUDGET_EXHAUSTED) return st;
+        if (st != ASX_OK) return st;
         if (r->task_count > 0) {
             return ASX_E_QUIESCENCE_TASKS_LIVE;
         }
@@ -117,6 +119,9 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
     }
 
     if (r->state == ASX_REGION_FINALIZING) {
+        st = asx_region_obligations_resolved(id);
+        if (st != ASX_OK) return st;
+
         /* Ghost linearity monitor: check for leaked obligations before close */
         (void)asx_ghost_check_obligation_leaks(id);
 

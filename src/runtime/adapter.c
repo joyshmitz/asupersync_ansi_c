@@ -209,6 +209,7 @@ void asx_adapter_router_decide(uint32_t used, uint32_t capacity,
     case ASX_CLASS_R3:    scaled_capacity = capacity * 2; break;
     case ASX_CLASS_R2:    scaled_capacity = capacity;     break;
     case ASX_CLASS_COUNT: scaled_capacity = capacity;     break;
+    default:              scaled_capacity = capacity;     break;
     }
 
     if (scaled_capacity == 0) {

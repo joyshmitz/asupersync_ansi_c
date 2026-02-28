@@ -246,6 +246,56 @@ TEST(region_drain_full_lifecycle)
     ASSERT_EQ(tstate, ASX_TASK_COMPLETED);
 }
 
+TEST(region_drain_propagates_budget_exhaustion)
+{
+    asx_region_id rid;
+    asx_task_id tid;
+    asx_budget budget;
+    asx_status st;
+    countdown_ctx ctx;
+
+    ctx.remaining = 100;
+
+    st = asx_region_open(&rid);
+    ASSERT_EQ(st, ASX_OK);
+
+    st = asx_task_spawn(rid, countdown_poll, &ctx, &tid);
+    ASSERT_EQ(st, ASX_OK);
+
+    budget = asx_budget_from_polls(1);
+    st = asx_region_drain(rid, &budget);
+    ASSERT_EQ(st, ASX_E_POLL_BUDGET_EXHAUSTED);
+}
+
+TEST(region_drain_blocks_unresolved_obligations)
+{
+    asx_region_id rid;
+    asx_obligation_id oid;
+    asx_region_state rstate;
+    asx_budget budget;
+    asx_status st;
+
+    st = asx_region_open(&rid);
+    ASSERT_EQ(st, ASX_OK);
+    ASSERT_EQ(asx_obligation_reserve(rid, &oid), ASX_OK);
+
+    budget = asx_budget_infinite();
+    st = asx_region_drain(rid, &budget);
+    ASSERT_EQ(st, ASX_E_OBLIGATIONS_UNRESOLVED);
+
+    st = asx_region_get_state(rid, &rstate);
+    ASSERT_EQ(st, ASX_OK);
+    ASSERT_EQ(rstate, ASX_REGION_FINALIZING);
+
+    ASSERT_EQ(asx_obligation_abort(oid), ASX_OK);
+    st = asx_region_drain(rid, &budget);
+    ASSERT_EQ(st, ASX_OK);
+
+    st = asx_region_get_state(rid, &rstate);
+    ASSERT_EQ(st, ASX_OK);
+    ASSERT_EQ(rstate, ASX_REGION_CLOSED);
+}
+
 TEST(quiescence_after_drain)
 {
     asx_region_id rid;
@@ -446,6 +496,8 @@ int main(void)
     asx_runtime_reset(); RUN_TEST(failing_task_outcome_err);
     asx_runtime_reset(); RUN_TEST(budget_exhaustion_stops_scheduler);
     asx_runtime_reset(); RUN_TEST(region_drain_full_lifecycle);
+    asx_runtime_reset(); RUN_TEST(region_drain_propagates_budget_exhaustion);
+    asx_runtime_reset(); RUN_TEST(region_drain_blocks_unresolved_obligations);
     asx_runtime_reset(); RUN_TEST(quiescence_after_drain);
     asx_runtime_reset(); RUN_TEST(quiescence_fails_before_close);
     asx_runtime_reset(); RUN_TEST(spawn_rejected_after_close);

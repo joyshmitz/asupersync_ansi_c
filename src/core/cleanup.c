@@ -32,6 +32,12 @@ asx_status asx_cleanup_push(asx_cleanup_stack *stack,
 
     if (stack == NULL || fn == NULL || out_handle == NULL)
         return ASX_E_INVALID_ARGUMENT;
+
+    if (stack->drained && stack->count == 0) {
+        /* Allow deterministic reuse after a prior full drain. */
+        stack->drained = 0;
+    }
+
     if (stack->count >= ASX_CLEANUP_STACK_CAPACITY)
         return ASX_E_RESOURCE_EXHAUSTED;
 

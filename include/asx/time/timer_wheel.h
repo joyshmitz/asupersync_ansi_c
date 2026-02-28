@@ -113,7 +113,8 @@ ASX_API uint32_t asx_timer_collect_expired(
 
 /* Cancel old timer and register a new one with updated deadline.
  *
- * Preconditions: wheel, old_handle, and out_handle must not be NULL.
+ * Preconditions: wheel and out_handle must not be NULL.
+ * old_handle may be NULL (treated as a pure register operation).
  * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if NULL params,
  *   ASX_E_RESOURCE_EXHAUSTED if timer arena is full.
  * Thread-safety: not thread-safe; single-threaded mode only. */

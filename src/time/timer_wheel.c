@@ -186,12 +186,14 @@ uint32_t asx_timer_collect_expired(asx_timer_wheel *wheel,
     uint64_t cand_deadline[ASX_MAX_TIMERS];
     uint64_t cand_seq[ASX_MAX_TIMERS];
 
-    if (wheel == NULL || out_wakers == NULL || max_wakers == 0) return 0;
+    if (wheel == NULL) return 0;
 
     /* Advance current time */
     if (now > wheel->current_time) {
         wheel->current_time = now;
     }
+
+    if (out_wakers == NULL || max_wakers == 0) return 0;
 
     /* Scan for expired alive timers */
     count = 0;

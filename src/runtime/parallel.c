@@ -469,6 +469,9 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
             if (asx_lane_total_tasks() == 0) {
                 return ASX_OK;
             }
+            /* Budget too small for any lane to get a quota — return
+             * exhausted instead of spinning forever. */
+            return ASX_E_POLL_BUDGET_EXHAUSTED;
         }
     }
 }

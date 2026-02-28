@@ -371,11 +371,12 @@ TEST(ghost_integration_lifecycle_obligation_leak_on_drain) {
     ASSERT_EQ(asx_region_open(&rid), ASX_OK);
     ASSERT_EQ(asx_obligation_reserve(rid, &oid), ASX_OK);
 
-    /* Drain without resolving obligation — ghost should detect leak */
+    /* Drain without resolving obligation — runtime must reject closure. */
     budget = asx_budget_infinite();
-    ASSERT_EQ(asx_region_drain(rid, &budget), ASX_OK);
+    ASSERT_EQ(asx_region_drain(rid, &budget), ASX_E_OBLIGATIONS_UNRESOLVED);
 
-    /* Ghost should have recorded the leak during finalization */
+    /* Leak remains observable to ghost monitor even though close is blocked. */
+    ASSERT_TRUE(asx_ghost_check_obligation_leaks(rid) >= (uint32_t)1);
     ASSERT_TRUE(asx_ghost_violation_count() >= (uint32_t)1);
 }
 
