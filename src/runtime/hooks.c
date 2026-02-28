@@ -1736,14 +1736,23 @@ static asx_status asx_codec_decode_fixture_json_payload(const void *payload,
                                                         size_t payload_len,
                                                         asx_canonical_fixture *out_fixture)
 {
+    const unsigned char *bytes;
     char *copy;
     asx_status st;
+    size_t i;
 
     if (payload == NULL || out_fixture == NULL || payload_len == 0u) {
         return ASX_E_INVALID_ARGUMENT;
     }
     if (payload_len + 1u < payload_len) {
         return ASX_E_RESOURCE_EXHAUSTED;
+    }
+
+    bytes = (const unsigned char *)payload;
+    for (i = 0u; i < payload_len; i++) {
+        if (bytes[i] == '\0') {
+            return ASX_E_INVALID_ARGUMENT;
+        }
     }
 
     copy = (char *)malloc(payload_len + 1u);
@@ -1804,24 +1813,39 @@ static int asx_codec_slice_nonempty(asx_codec_slice slice)
     return slice.ptr != NULL && slice.len > 0u;
 }
 
-static int asx_codec_slice_json_prefix(asx_codec_slice slice, char expected_first_char)
+static int asx_codec_slice_contains_nul(asx_codec_slice slice)
 {
     size_t i;
-    const unsigned char *bytes;
 
     if (!asx_codec_slice_nonempty(slice)) {
+        return 1;
+    }
+    for (i = 0u; i < slice.len; i++) {
+        if (slice.ptr[i] == '\0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int asx_codec_slice_json_validate(asx_codec_slice slice,
+                                         char expected_first_char)
+{
+    char *copy;
+    int ok;
+
+    if (!asx_codec_slice_nonempty(slice) || asx_codec_slice_contains_nul(slice)) {
         return 0;
     }
 
-    bytes = (const unsigned char *)slice.ptr;
-    i = 0u;
-    while (i < slice.len) {
-        if (bytes[i] != ' ' && bytes[i] != '\t' && bytes[i] != '\r' && bytes[i] != '\n') {
-            return bytes[i] == (unsigned char)expected_first_char;
-        }
-        i++;
+    copy = asx_codec_strdup_range(slice.ptr, slice.len);
+    if (copy == NULL) {
+        return 0;
     }
-    return 0;
+
+    ok = asx_codec_json_value_matches(copy, expected_first_char);
+    free(copy);
+    return ok;
 }
 
 static int asx_codec_slice_contains(asx_codec_slice haystack, const char *needle)
@@ -2102,13 +2126,13 @@ static asx_status asx_codec_bin_validate_view(const asx_codec_bin_fixture_view *
         !asx_codec_slice_nonempty(view->capture_run_id)) {
         return ASX_E_INVALID_ARGUMENT;
     }
-    if (!asx_codec_slice_json_prefix(view->input_json, '{') ||
+    if (!asx_codec_slice_json_validate(view->input_json, '{') ||
         !asx_codec_slice_contains(view->input_json, "\"ops\"")) {
         return ASX_E_INVALID_ARGUMENT;
     }
-    if (!asx_codec_slice_json_prefix(view->expected_events_json, '[') ||
-        !asx_codec_slice_json_prefix(view->expected_final_snapshot_json, '{') ||
-        !asx_codec_slice_json_prefix(view->expected_error_codes_json, '[')) {
+    if (!asx_codec_slice_json_validate(view->expected_events_json, '[') ||
+        !asx_codec_slice_json_validate(view->expected_final_snapshot_json, '{') ||
+        !asx_codec_slice_json_validate(view->expected_error_codes_json, '[')) {
         return ASX_E_INVALID_ARGUMENT;
     }
     if (!asx_codec_slice_is_sha256_digest(view->semantic_digest)) {

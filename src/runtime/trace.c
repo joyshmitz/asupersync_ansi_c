@@ -117,8 +117,11 @@ asx_status asx_replay_load_reference(const asx_trace_event *events,
     if (events == NULL && count > 0) {
         return ASX_E_INVALID_ARGUMENT;
     }
+    if (count > ASX_TRACE_CAPACITY) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
 
-    copy_count = count < ASX_TRACE_CAPACITY ? count : ASX_TRACE_CAPACITY;
+    copy_count = count;
     if (copy_count > 0) {
         memcpy(g_replay_ref, events, copy_count * sizeof(asx_trace_event));
     }

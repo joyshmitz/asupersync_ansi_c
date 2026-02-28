@@ -153,6 +153,8 @@ asx_status asx_channel_create(asx_region_id region,
 {
     uint16_t i;
     asx_channel_slot *s;
+    asx_region_state region_state;
+    asx_status st;
 
     if (out_id == NULL) {
         return ASX_E_INVALID_ARGUMENT;
@@ -162,6 +164,17 @@ asx_status asx_channel_create(asx_region_id region,
     }
     if (!asx_handle_is_valid(region)) {
         return ASX_E_INVALID_ARGUMENT;
+    }
+    if (asx_handle_type_tag(region) != ASX_TYPE_REGION) {
+        return ASX_E_INVALID_ARGUMENT;
+    }
+
+    st = asx_region_get_state(region, &region_state);
+    if (st != ASX_OK) {
+        return st;
+    }
+    if (region_state != ASX_REGION_OPEN) {
+        return ASX_E_INVALID_STATE;
     }
 
     for (i = 0; i < ASX_MAX_CHANNELS; i++) {
