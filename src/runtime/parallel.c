@@ -251,6 +251,18 @@ static void lane_assign_internal(asx_task_id tid, asx_lane_class lc)
     (void)st_;
 }
 
+static asx_status parallel_return_budget(uint32_t round)
+{
+    asx_trace_emit(ASX_TRACE_SCHED_BUDGET, ASX_INVALID_ID, round);
+    return ASX_E_POLL_BUDGET_EXHAUSTED;
+}
+
+static asx_status parallel_return_quiescent(uint32_t round)
+{
+    asx_trace_emit(ASX_TRACE_SCHED_QUIESCENT, ASX_INVALID_ID, round);
+    return ASX_OK;
+}
+
 /* -------------------------------------------------------------------
  * Parallel scheduler run
  *
@@ -317,12 +329,12 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                               "provides bounded termination");
 
         if (asx_budget_is_exhausted(budget)) {
-            return ASX_E_POLL_BUDGET_EXHAUSTED;
+            return parallel_return_budget(round);
         }
 
         total_active = asx_lane_total_tasks();
         if (total_active == 0) {
-            return ASX_OK;
+            return parallel_return_quiescent(round);
         }
 
         /* Compute per-lane budgets for this round */
@@ -361,14 +373,14 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                                       "bounded by lane count and quota");
 
                 if (asx_budget_is_exhausted(budget)) {
-                    return ASX_E_POLL_BUDGET_EXHAUSTED;
+                    return parallel_return_budget(round);
                 }
 
                 tid = lane->tasks[j];
                 slot_idx = asx_handle_slot(tid);
                 if (slot_idx >= ASX_MAX_TASKS) {
-                    j++;
-                    continue;
+                    lane_remove_internal(tid);
+                    continue; /* don't increment j, array shifted */
                 }
                 t = &g_tasks[slot_idx];
 
@@ -378,6 +390,12 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                     continue; /* don't increment j, array shifted */
                 }
 
+                /* Refresh handle from live slot to avoid stale state masks. */
+                tid = asx_handle_pack(ASX_TYPE_TASK,
+                                      (uint16_t)(1u << (unsigned)t->state),
+                                      asx_handle_pack_index(t->generation, slot_idx));
+                lane->tasks[j] = tid;
+
                 /* Handle cancel force-completion */
                 if (t->cancel_pending &&
                     (t->state == ASX_TASK_CANCELLING ||
@@ -385,6 +403,7 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                     t->cleanup_polls_remaining == 0) {
                     t->state = ASX_TASK_COMPLETED;
                     t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
+                    asx_task_release_capture_internal(t);
                     rslot->task_count--;
                     lane_remove_internal(tid);
                     g_workers[0].tasks_completed++;
@@ -396,6 +415,7 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                 if (t->state == ASX_TASK_FINALIZING) {
                     t->state = ASX_TASK_COMPLETED;
                     t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
+                    asx_task_release_capture_internal(t);
                     rslot->task_count--;
                     lane_remove_internal(tid);
                     g_workers[0].tasks_completed++;
@@ -406,7 +426,7 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
 
                 /* Consume budget */
                 if (asx_budget_consume_poll(budget) == 0) {
-                    return ASX_E_POLL_BUDGET_EXHAUSTED;
+                    return parallel_return_budget(round);
                 }
 
                 /* Transition Created → Running */
@@ -418,12 +438,16 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
 
                 /* Poll the task */
                 poll_result = t->poll_fn(t->user_data, tid);
+                polls_this_lane++;
+                g_workers[0].polls_total++;
+                any_polled = 1;
 
                 if (poll_result == ASX_OK) {
                     t->state = ASX_TASK_COMPLETED;
                     t->outcome = asx_outcome_make(
                         t->cancel_pending ? ASX_OUTCOME_CANCELLED
                                           : ASX_OUTCOME_OK);
+                    asx_task_release_capture_internal(t);
                     rslot->task_count--;
                     lane_remove_internal(tid);
                     g_workers[0].tasks_completed++;
@@ -435,11 +459,20 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                     t->outcome = asx_outcome_make(
                         t->cancel_pending ? ASX_OUTCOME_CANCELLED
                                           : ASX_OUTCOME_ERR);
+                    asx_task_release_capture_internal(t);
                     rslot->task_count--;
                     lane_remove_internal(tid);
                     g_workers[0].tasks_completed++;
                     asx_trace_emit(ASX_TRACE_SCHED_COMPLETE,
                                    (uint64_t)tid, round);
+
+                    {
+                        asx_status fc_ = asx_region_contain_fault(region, poll_result);
+                        if (fc_ != ASX_OK &&
+                            asx_containment_policy_active() != ASX_CONTAIN_POISON_REGION) {
+                            return fc_;
+                        }
+                    }
                     continue;
                 }
 
@@ -448,9 +481,6 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
                     t->cleanup_polls_remaining--;
                 }
 
-                polls_this_lane++;
-                g_workers[0].polls_total++;
-                any_polled = 1;
                 j++;
             }
 
@@ -464,14 +494,15 @@ asx_status asx_parallel_run(asx_region_id region, asx_budget *budget)
             }
         }
 
+        if (asx_lane_total_tasks() == 0) {
+            return parallel_return_quiescent(round);
+        }
+
         if (!any_polled) {
             /* All tasks in lanes are either completed or no budget */
-            if (asx_lane_total_tasks() == 0) {
-                return ASX_OK;
-            }
             /* Budget too small for any lane to get a quota — return
              * exhausted instead of spinning forever. */
-            return ASX_E_POLL_BUDGET_EXHAUSTED;
+            return parallel_return_budget(round);
         }
     }
 }
@@ -513,4 +544,3 @@ int asx_parallel_is_initialized(void)
 {
     return g_initialized;
 }
-

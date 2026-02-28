@@ -81,4 +81,7 @@ ASX_MUST_USE asx_status asx_task_slot_lookup(asx_task_id id, asx_task_slot **out
 ASX_MUST_USE asx_status asx_obligation_slot_lookup(asx_obligation_id id,
                                                    asx_obligation_slot **out);
 
+/* Release captured state for a task exactly once. */
+void asx_task_release_capture_internal(asx_task_slot *task);
+
 #endif /* ASX_RUNTIME_INTERNAL_H */

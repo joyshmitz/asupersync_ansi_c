@@ -17,6 +17,7 @@
 #include <asx/runtime/trace.h>
 #include <asx/core/transition.h>
 #include <asx/core/cancel.h>
+#include <asx/asx_config.h>
 #include "runtime_internal.h"
 
 /* -------------------------------------------------------------------
@@ -59,20 +60,6 @@ int asx_scheduler_event_get(uint32_t index, asx_scheduler_event *out)
 void asx_scheduler_event_reset(void)
 {
     g_event_count = 0;
-}
-
-/* -------------------------------------------------------------------
- * Task captured-state release
- * ------------------------------------------------------------------- */
-
-static void asx_task_release_capture(asx_task_slot *task)
-{
-    if (task->captured_dtor != NULL && task->captured_state != NULL) {
-        task->captured_dtor(task->captured_state, task->captured_size);
-    }
-    task->captured_dtor = NULL;
-    task->captured_state = NULL;
-    task->captured_size = 0;
 }
 
 /* -------------------------------------------------------------------
@@ -145,7 +132,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                                                       ASX_TASK_COMPLETED);
                 t->state = ASX_TASK_COMPLETED;
                 t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
-                asx_task_release_capture(t);
+                asx_task_release_capture_internal(t);
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
@@ -172,7 +159,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 t->state = ASX_TASK_COMPLETED;
                 t->cancel_phase = ASX_CANCEL_PHASE_COMPLETED;
                 t->outcome = asx_outcome_make(ASX_OUTCOME_CANCELLED);
-                asx_task_release_capture(t);
+                asx_task_release_capture_internal(t);
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_CANCEL_FORCED, tid, round);
@@ -210,7 +197,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 } else {
                     t->outcome = asx_outcome_make(ASX_OUTCOME_OK);
                 }
-                asx_task_release_capture(t);
+                asx_task_release_capture_internal(t);
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
@@ -226,7 +213,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 } else {
                     t->outcome = asx_outcome_make(ASX_OUTCOME_ERR);
                 }
-                asx_task_release_capture(t);
+                asx_task_release_capture_internal(t);
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
@@ -238,7 +225,10 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                  * continues draining existing tasks. */
                 {
                     asx_status fc_ = asx_region_contain_fault(region, poll_result);
-                    (void)fc_;
+                    if (fc_ != ASX_OK &&
+                        asx_containment_policy_active() != ASX_CONTAIN_POISON_REGION) {
+                        return fc_;
+                    }
                 }
             } else if (t->cancel_pending) {
                 /* PENDING + cancel active: decrement cleanup budget.

@@ -299,6 +299,19 @@ asx_status asx_region_contain_fault(asx_region_id id, asx_status fault)
     }
 }
 
+void asx_task_release_capture_internal(asx_task_slot *task)
+{
+    if (task == NULL) return;
+
+    if (task->captured_dtor != NULL && task->captured_state != NULL) {
+        task->captured_dtor(task->captured_state, task->captured_size);
+    }
+
+    task->captured_dtor = NULL;
+    task->captured_state = NULL;
+    task->captured_size = 0;
+}
+
 /* -------------------------------------------------------------------
  * Task lifecycle
  * ------------------------------------------------------------------- */

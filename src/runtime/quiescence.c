@@ -32,6 +32,21 @@ static asx_status asx_region_obligations_resolved(asx_region_id id)
     return ASX_OK;
 }
 
+static int asx_region_has_uncancelled_tasks(asx_region_id id)
+{
+    uint32_t i;
+
+    for (i = 0; i < g_task_count; i++) {
+        asx_task_slot *t = &g_tasks[i];
+        if (!t->alive) continue;
+        if (t->region != id) continue;
+        if (asx_task_is_terminal(t->state)) continue;
+        if (!t->cancel_pending) return 1;
+    }
+
+    return 0;
+}
+
 /* -------------------------------------------------------------------
  * Quiescence check
  * ------------------------------------------------------------------- */
@@ -85,6 +100,12 @@ asx_status asx_region_drain(asx_region_id id, asx_budget *budget)
         /* Propagate PARENT cancel to all active tasks in this region.
          * Tasks observe cancellation via asx_checkpoint() and have
          * bounded cleanup before forced completion. (bd-2cw.3) */
+        asx_cancel_propagate(id, ASX_CANCEL_PARENT);
+    }
+
+    if (r->state == ASX_REGION_CLOSING &&
+        r->task_count > 0 &&
+        asx_region_has_uncancelled_tasks(id)) {
         asx_cancel_propagate(id, ASX_CANCEL_PARENT);
     }
 
