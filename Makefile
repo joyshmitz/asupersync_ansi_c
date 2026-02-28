@@ -90,6 +90,7 @@ WARN_FLAGS := -Wall -Wextra -Wpedantic -Werror \
 
 # C standard
 STD_FLAGS := -std=c99
+DEP_FLAGS := -MMD -MP
 
 # ---------------------------------------------------------------------------
 # Include paths
@@ -168,6 +169,7 @@ BIN_DIR   := $(BUILD_DIR)/bin
 TEST_DIR  := $(BUILD_DIR)/tests
 
 LIB_OBJ := $(patsubst src/%.c,$(OBJ_DIR)/%.o,$(LIB_SRC))
+LIB_DEP := $(LIB_OBJ:.o=.d)
 LIB_A   := $(LIB_DIR)/libasx.a
 
 # ---------------------------------------------------------------------------
@@ -258,7 +260,9 @@ $(LIB_A): $(LIB_OBJ) | $(LIB_DIR)
 	$(AR) rcs $@ $^
 
 $(OBJ_DIR)/%.o: src/%.c | obj-dirs
-	$(CC) $(ALL_CFLAGS) -c -o $@ $<
+	$(CC) $(ALL_CFLAGS) $(DEP_FLAGS) -c -o $@ $<
+
+-include $(LIB_DEP)
 
 obj-dirs:
 	@mkdir -p $(OBJ_DIR)/core $(OBJ_DIR)/runtime $(OBJ_DIR)/channel \
