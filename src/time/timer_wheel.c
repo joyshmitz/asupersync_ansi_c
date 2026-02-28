@@ -13,6 +13,7 @@
  */
 
 #include <asx/time/timer_wheel.h>
+#include <asx/asx_config.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------
@@ -111,6 +112,7 @@ asx_status asx_timer_register(asx_timer_wheel *wheel,
     {
         uint32_t i;
         for (i = 0; i < wheel->slot_count; i++) {
+            ASX_CHECKPOINT_WAIVER("bounded: slot_count <= ASX_MAX_TIMERS");
             if (!wheel->slots[i].alive) {
                 idx = i;
                 break;
@@ -206,6 +208,7 @@ uint32_t asx_timer_collect_expired(asx_timer_wheel *wheel,
 
     /* Sort by (deadline ASC, insertion_seq ASC) — insertion sort for stability */
     for (i = 1; i < count; i++) {
+        ASX_CHECKPOINT_WAIVER("bounded: count <= ASX_MAX_TIMERS");
         uint32_t  tmp_idx = cand_idx[i];
         uint64_t  tmp_dl  = cand_deadline[i];
         uint64_t  tmp_seq = cand_seq[i];
@@ -213,6 +216,7 @@ uint32_t asx_timer_collect_expired(asx_timer_wheel *wheel,
         while (j > 0 &&
                (cand_deadline[j - 1] > tmp_dl ||
                 (cand_deadline[j - 1] == tmp_dl && cand_seq[j - 1] > tmp_seq))) {
+            ASX_CHECKPOINT_WAIVER("bounded: j <= count <= ASX_MAX_TIMERS");
             cand_idx[j] = cand_idx[j - 1];
             cand_deadline[j] = cand_deadline[j - 1];
             cand_seq[j] = cand_seq[j - 1];
@@ -227,6 +231,7 @@ uint32_t asx_timer_collect_expired(asx_timer_wheel *wheel,
     if (count > max_wakers) count = max_wakers;
 
     for (i = 0; i < count; i++) {
+        ASX_CHECKPOINT_WAIVER("bounded: count <= max_wakers <= ASX_MAX_TIMERS");
         asx_timer_slot *s = &wheel->slots[cand_idx[i]];
         out_wakers[i] = s->waker_data;
         s->alive = 0;

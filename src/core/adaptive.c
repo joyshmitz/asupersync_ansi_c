@@ -8,6 +8,7 @@
  */
 
 #include <asx/core/adaptive.h>
+#include <asx/asx_config.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------
@@ -79,6 +80,7 @@ static uint64_t compute_expected_loss(const asx_adaptive_surface *surface,
     uint64_t total = 0;
     uint8_t i;
     for (i = 0; i < surface->state_count; i++) {
+        ASX_CHECKPOINT_WAIVER("bounded: state_count <= ASX_ADAPTIVE_MAX_ACTIONS");
         uint32_t loss = surface->loss_fn(surface->loss_ctx, action, i);
         /* loss is fp 16.16, posterior is fp 0.32
          * product is fp 16.48; shift right 32 to get fp 16.16 */
@@ -108,6 +110,7 @@ static void write_ledger(const asx_adaptive_surface *surface,
     }
     e->evidence_count = n;
     for (i = 0; i < n; i++) {
+        ASX_CHECKPOINT_WAIVER("bounded: n <= ASX_ADAPTIVE_MAX_EVIDENCE");
         e->evidence[i] = evidence[i];
     }
 
@@ -173,6 +176,7 @@ asx_status asx_adaptive_decide(
         second_action = 0;
 
         for (a = 0; a < surface->action_count; a++) {
+            ASX_CHECKPOINT_WAIVER("bounded: action_count <= ASX_ADAPTIVE_MAX_ACTIONS");
             uint64_t el = compute_expected_loss(surface, posterior, a);
             if (el < best_loss) {
                 second_loss   = best_loss;

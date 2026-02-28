@@ -17,6 +17,26 @@
 #include <asx/asx_ids.h>
 #include <asx/asx_status.h>
 
+/* -------------------------------------------------------------------
+ * Checkpoint-coverage waiver annotations (bd-66l.6)
+ *
+ * Used by the CI checkpoint-coverage lint gate to suppress false
+ * positives for loops that intentionally do not call asx_checkpoint().
+ *
+ * ASX_CHECKPOINT_WAIVER("reason")      — per-loop waiver
+ * ASX_CHECKPOINT_WAIVER_FILE("reason") — file-level waiver (all loops exempt)
+ *
+ * The reason string must explain why the loop is exempt (e.g.,
+ * "kernel-scheduler: budget exhaustion provides bounded termination",
+ * "codec-utility: input length bounded by buffer capacity contract").
+ * ------------------------------------------------------------------- */
+#ifndef ASX_CHECKPOINT_WAIVER
+#define ASX_CHECKPOINT_WAIVER(reason)      ((void)0)
+#endif
+#ifndef ASX_CHECKPOINT_WAIVER_FILE
+#define ASX_CHECKPOINT_WAIVER_FILE(reason)  ((void)0)
+#endif
+
 /*
  * Profile selection (exactly one must be defined at compile time).
  * If none is defined, ASX_PROFILE_CORE is assumed.
@@ -27,7 +47,8 @@
     !defined(ASX_PROFILE_FREESTANDING) && \
     !defined(ASX_PROFILE_EMBEDDED_ROUTER) && \
     !defined(ASX_PROFILE_HFT) && \
-    !defined(ASX_PROFILE_AUTOMOTIVE)
+    !defined(ASX_PROFILE_AUTOMOTIVE) && \
+    !defined(ASX_PROFILE_PARALLEL)
   #define ASX_PROFILE_CORE
 #endif
 
@@ -46,6 +67,55 @@
 #ifndef ASX_DETERMINISTIC
   #define ASX_DETERMINISTIC 1
 #endif
+
+/* ------------------------------------------------------------------ */
+/* Resource classes                                                     */
+/*                                                                     */
+/* Resource classes are capability envelopes, not feature switches.     */
+/* They scale operational limits (regions, tasks, timers, trace) while  */
+/* preserving identical semantic behavior. Used primarily with          */
+/* embedded/constrained profiles.                                      */
+/*                                                                     */
+/*   R1 — tight: aggressive caps for very constrained footprints       */
+/*   R2 — balanced: typical router-class device defaults               */
+/*   R3 — roomy: higher-capacity embedded/server crossover             */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_CLASS_R1    = 0,  /* tight: very constrained footprint */
+    ASX_CLASS_R2    = 1,  /* balanced: typical router-class device */
+    ASX_CLASS_R3    = 2,  /* roomy: higher-capacity embedded/server */
+    ASX_CLASS_COUNT = 3
+} asx_resource_class;
+
+/* Return the human-readable name of a resource class. Never returns NULL. */
+ASX_API const char *asx_resource_class_name(asx_resource_class cls);
+
+/* ------------------------------------------------------------------ */
+/* Trace mode selection                                                */
+/*                                                                     */
+/* Controls how runtime trace events are retained:                     */
+/*   RAM_RING         — bounded in-memory ring buffer (default)        */
+/*   PERSISTENT_SPILL — spill to persistent storage path               */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ASX_TRACE_MODE_RAM_RING         = 0,  /* in-memory ring (default) */
+    ASX_TRACE_MODE_PERSISTENT_SPILL = 1   /* flash/disk spill */
+} asx_trace_mode;
+
+/* Trace configuration for embedded/constrained profiles */
+typedef struct {
+    asx_trace_mode mode;           /* RAM_RING or PERSISTENT_SPILL */
+    uint32_t       ring_capacity;  /* event slots in RAM ring */
+    int            wear_safe;      /* 1: minimize flash write cycles */
+    uint32_t       flush_interval_ms; /* spill interval (0 = on-demand only) */
+} asx_trace_config;
+
+/* Initialize trace config with resource-class-appropriate defaults.
+ * Returns ASX_OK on success, ASX_E_INVALID_ARGUMENT if cfg is NULL. */
+ASX_API asx_status asx_trace_config_init(asx_trace_config *cfg,
+                                          asx_resource_class cls);
 
 /* ------------------------------------------------------------------ */
 /* Safety profiles                                                     */

@@ -298,6 +298,10 @@ TEST(crash_restart_simple_scenario_replays_identically)
     /* --- Phase 2: simulated restart + replay --- */
     reset_all();
     ASSERT_EQ(asx_trace_import_binary(g_buf, out_len), ASX_OK);
+    /* import_binary restores trace events into the live ring and replay
+     * reference. For restart replay, keep the reference but start a fresh
+     * live trace for the second run. */
+    asx_trace_reset();
 
     /* Re-run same scenario */
     run_trace_scenario_simple();
@@ -350,6 +354,7 @@ TEST(crash_restart_multi_task_replays_identically)
     /* Phase 2: restart + replay */
     reset_all();
     ASSERT_EQ(asx_trace_import_binary(g_buf, out_len), ASX_OK);
+    asx_trace_reset();
     run_trace_scenario_multi();
 
     {
@@ -371,6 +376,7 @@ TEST(crash_restart_failing_task_replays_identically)
     /* Phase 2: restart + replay */
     reset_all();
     ASSERT_EQ(asx_trace_import_binary(g_buf, out_len), ASX_OK);
+    asx_trace_reset();
     run_trace_scenario_fail();
 
     {

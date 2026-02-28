@@ -8,6 +8,7 @@
  */
 
 #include <asx/core/cleanup.h>
+#include <asx/asx_config.h>
 #include <stddef.h>
 
 void asx_cleanup_init(asx_cleanup_stack *stack)
@@ -63,6 +64,7 @@ void asx_cleanup_drain(asx_cleanup_stack *stack)
     /* Drain in LIFO order: highest index first */
     i = stack->count;
     while (i > 0) {
+        /* ASX_CHECKPOINT_WAIVER: bounded by count <= ASX_CLEANUP_STACK_CAPACITY */
         i--;
         if (stack->fns[i] != NULL) {
             stack->fns[i](stack->data[i]);
@@ -81,6 +83,7 @@ uint32_t asx_cleanup_pending(const asx_cleanup_stack *stack)
     if (stack == NULL) return 0;
     pending = 0;
     for (i = 0; i < stack->count; i++) {
+        ASX_CHECKPOINT_WAIVER("bounded: count <= ASX_CLEANUP_STACK_CAPACITY");
         if (stack->fns[i] != NULL) {
             pending++;
         }

@@ -14,6 +14,7 @@
 
 #include <asx/asx.h>
 #include <asx/runtime/runtime.h>
+#include <asx/runtime/trace.h>
 #include <asx/core/transition.h>
 #include <asx/core/cancel.h>
 #include "runtime_internal.h"
@@ -100,15 +101,20 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
 
     /* Scheduler loop: round-robin poll until all tasks complete */
     for (round = 0; ; round++) {
+        ASX_CHECKPOINT_WAIVER("kernel-scheduler: this IS the scheduler event loop; "
+                              "budget exhaustion provides bounded termination");
         /* Check budget exhaustion */
         if (asx_budget_is_exhausted(budget)) {
             sched_emit(ASX_SCHED_EVENT_BUDGET, ASX_INVALID_ID, round);
+            asx_trace_emit(ASX_TRACE_SCHED_BUDGET, ASX_INVALID_ID, round);
             return ASX_E_POLL_BUDGET_EXHAUSTED;
         }
 
         active = 0;
 
         for (i = 0; i < g_task_count; i++) {
+            ASX_CHECKPOINT_WAIVER("kernel-scheduler: inner poll loop bounded by "
+                                  "g_task_count <= ASX_MAX_TASKS arena capacity");
             asx_task_slot *t = &g_tasks[i];
             asx_task_id tid;
             asx_status poll_result;
@@ -143,6 +149,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
+                asx_trace_emit(ASX_TRACE_SCHED_COMPLETE, (uint64_t)tid, round);
                 continue;
             }
 
@@ -169,12 +176,14 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_CANCEL_FORCED, tid, round);
+                asx_trace_emit(ASX_TRACE_SCHED_COMPLETE, (uint64_t)tid, round);
                 continue;
             }
 
             /* Consume one poll unit */
             if (asx_budget_consume_poll(budget) == 0) {
                 sched_emit(ASX_SCHED_EVENT_BUDGET, ASX_INVALID_ID, round);
+                asx_trace_emit(ASX_TRACE_SCHED_BUDGET, ASX_INVALID_ID, round);
                 return ASX_E_POLL_BUDGET_EXHAUSTED;
             }
 
@@ -185,6 +194,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
 
             /* Emit poll event */
             sched_emit(ASX_SCHED_EVENT_POLL, tid, round);
+            asx_trace_emit(ASX_TRACE_SCHED_POLL, (uint64_t)tid, round);
 
             /* Call the task's poll function */
             asx_error_ledger_bind_task(tid);
@@ -204,6 +214,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
+                asx_trace_emit(ASX_TRACE_SCHED_COMPLETE, (uint64_t)tid, round);
             } else if (poll_result != ASX_E_PENDING) {
                 /* Task failed — mark as completed with error.
                  * If cancel was pending, outcome joins to CANCELLED
@@ -219,6 +230,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
                 rslot->task_count--;
                 active--;
                 sched_emit(ASX_SCHED_EVENT_COMPLETE, tid, round);
+                asx_trace_emit(ASX_TRACE_SCHED_COMPLETE, (uint64_t)tid, round);
 
                 /* Apply fault containment policy (bd-hwb.15).
                  * In POISON_REGION mode this poisons the region,
@@ -242,6 +254,7 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
         /* No active tasks left — quiescent */
         if (active == 0) {
             sched_emit(ASX_SCHED_EVENT_QUIESCENT, ASX_INVALID_ID, round);
+            asx_trace_emit(ASX_TRACE_SCHED_QUIESCENT, ASX_INVALID_ID, round);
             return ASX_OK;
         }
     }

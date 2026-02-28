@@ -7,6 +7,11 @@
  *   - Allocator seal for hardened/no-allocation profiles
  *   - Hook-backed runtime helpers that dispatch through the active hook table
  *
+ * ASX_CHECKPOINT_WAIVER_FILE("codec-and-hooks: all loops in this file are either "
+ *   "codec parsing (JSON/binary input processing), hook dispatch, or fault-injection "
+ *   "table scans. None are on the task poll hot path. Codec input lengths are bounded "
+ *   "by the codec buffer capacity contract.")
+ *
  * SPDX-License-Identifier: MIT
  */
 

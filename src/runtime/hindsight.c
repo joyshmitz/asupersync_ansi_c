@@ -5,6 +5,10 @@
  * Provides JSON flush for replay diagnostics and FNV-1a digest for
  * deterministic identity comparison.
  *
+ * ASX_CHECKPOINT_WAIVER_FILE("hindsight-ring: all loops are bounded by "
+ *   "ASX_HINDSIGHT_CAPACITY (256) or integer-conversion constants. "
+ *   "Flush/digest functions are diagnostic-only, not on task poll path.")
+ *
  * SPDX-License-Identifier: MIT
  */
 

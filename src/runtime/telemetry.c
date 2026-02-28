@@ -5,6 +5,9 @@
  * with a tier-independent rolling digest that ensures canonical semantic
  * identity is preserved regardless of observability level.
  *
+ * ASX_CHECKPOINT_WAIVER_FILE("telemetry: loops bounded by sizeof() for FNV-1a "
+ *   "mixing. Emit/digest functions are observability-only, not on task poll path.")
+ *
  * SPDX-License-Identifier: MIT
  */
 

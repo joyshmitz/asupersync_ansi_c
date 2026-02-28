@@ -115,6 +115,8 @@ uint32_t asx_cancel_propagate(asx_region_id region, asx_cancel_kind kind)
     uint32_t count = 0;
 
     for (i = 0; i < g_task_count; i++) {
+        ASX_CHECKPOINT_WAIVER("kernel-propagation: single-pass cancel sweep bounded by "
+                              "g_task_count <= ASX_MAX_TASKS; O(1) per iteration");
         asx_task_slot *t = &g_tasks[i];
         asx_task_id tid;
 

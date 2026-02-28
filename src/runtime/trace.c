@@ -5,6 +5,11 @@
  * Provides FNV-1a digest for deterministic identity, replay comparison
  * against reference sequences, and JSON snapshot export.
  *
+ * ASX_CHECKPOINT_WAIVER_FILE("trace-and-snapshot: all loops are bounded by "
+ *   "ASX_TRACE_CAPACITY, ASX_MAX_REGIONS/TASKS/OBLIGATIONS, or integer "
+ *   "conversion limits. Snapshot/export functions are observability-only, "
+ *   "never called from the task poll hot path.")
+ *
  * SPDX-License-Identifier: MIT
  */
 
@@ -513,7 +518,11 @@ asx_status asx_trace_import_binary(const uint8_t *buf, uint32_t len)
 
     if (computed_digest != stored_digest) return ASX_E_INVALID_ARGUMENT;
 
-    /* Load as replay reference */
+    /* Load as replay reference for continuity verification.
+     * The trace ring is NOT overwritten — callers that need to
+     * compare a replayed trace against the imported reference
+     * should emit fresh events into the ring and then call
+     * asx_replay_verify() or asx_trace_continuity_check(). */
     return asx_replay_load_reference(events, count);
 }
 
@@ -522,8 +531,38 @@ asx_status asx_trace_continuity_check(const uint8_t *buf, uint32_t len)
     asx_status st;
     asx_replay_result result;
 
+    /* Save current trace state — import_binary overwrites g_trace_ring
+     * and g_trace_count, but we need the *current* trace for comparison. */
+    asx_trace_event saved_ring[ASX_TRACE_CAPACITY];
+    uint32_t saved_count = g_trace_count;
+    uint32_t copy_count = saved_count < ASX_TRACE_CAPACITY
+                          ? saved_count : ASX_TRACE_CAPACITY;
+
+    if (copy_count > 0) {
+        memcpy(saved_ring, g_trace_ring,
+               copy_count * sizeof(asx_trace_event));
+    }
+
+    /* Import binary loads events as replay reference AND into g_trace_ring.
+     * After import, g_trace_ring/count contain the reference data. */
     st = asx_trace_import_binary(buf, len);
-    if (st != ASX_OK) return st;
+    if (st != ASX_OK) {
+        /* Restore trace state on failure */
+        if (copy_count > 0) {
+            memcpy(g_trace_ring, saved_ring,
+                   copy_count * sizeof(asx_trace_event));
+        }
+        g_trace_count = saved_count;
+        return st;
+    }
+
+    /* Restore the current trace so replay_verify compares the live
+     * trace against the imported reference. */
+    if (copy_count > 0) {
+        memcpy(g_trace_ring, saved_ring,
+               copy_count * sizeof(asx_trace_event));
+    }
+    g_trace_count = saved_count;
 
     result = asx_replay_verify();
 
