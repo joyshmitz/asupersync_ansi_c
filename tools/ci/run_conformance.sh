@@ -23,9 +23,13 @@ Environment:
   FAIL_ON_EMPTY_FIXTURES=1      fail when no fixture JSON files are present (default: 1)
   FAIL_ON_INCOMPLETE_PARITY=1   fail when parity mode has no comparable pairs (default: 1)
   FAIL_ON_MISSING_JQ=1          fail when jq is missing (default: 1)
+  BUILD_DIR=<dir>               build output directory (default: build)
   ASX_SEMANTIC_DELTA_BUDGET=N   default semantic-delta budget (default: 0)
   ASX_SEMANTIC_DELTA_EXCEPTION_FILE=<path>
                                 approved exception ledger (default: docs/SEMANTIC_DELTA_EXCEPTIONS.json)
+  SEMANTIC_DELTA_ARTIFACT_DIR=<dir>
+                                semantic-delta artifact output directory
+                                (default: build/conformance)
   CONFORMANCE_CFLAGS="..."      override compile flags for smoke binary
 EOF
 }
@@ -62,7 +66,12 @@ BASELINE_FILE="$REPO_ROOT/docs/rust_baseline_inventory.json"
 SCHEMA_FILE="$REPO_ROOT/schemas/canonical_fixture.schema.json"
 SEMANTIC_DELTA_BUDGET_DEFAULT="${ASX_SEMANTIC_DELTA_BUDGET:-0}"
 SEMANTIC_DELTA_EXCEPTION_FILE="${ASX_SEMANTIC_DELTA_EXCEPTION_FILE:-$REPO_ROOT/docs/SEMANTIC_DELTA_EXCEPTIONS.json}"
-SEMANTIC_DELTA_ARTIFACT_DIR="$REPO_ROOT/build/conformance"
+SEMANTIC_DELTA_ARTIFACT_DIR="${SEMANTIC_DELTA_ARTIFACT_DIR:-$REPO_ROOT/build/conformance}"
+BUILD_DIR="${BUILD_DIR:-build}"
+if [[ "$BUILD_DIR" != /* ]]; then
+  BUILD_DIR="$REPO_ROOT/$BUILD_DIR"
+fi
+LIB_ASX="$BUILD_DIR/lib/libasx.a"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -185,7 +194,7 @@ if ! make -C "$REPO_ROOT" build >"$BUILD_LOG" 2>&1; then
     '{kind:"smoke",run_id:$run_id,mode:$mode,status:"fail",parity:"fail",delta_classification:"harness_defect",diagnostic:("make build failed; inspect " + $log)}' \
     >>"$REPORT_FILE"
 else
-  smoke_bin="$REPO_ROOT/build/tests/conformance/codec_json_baseline_test"
+  smoke_bin="$BUILD_DIR/tests/conformance/codec_json_baseline_test"
   mkdir -p "$(dirname "$smoke_bin")"
   smoke_cmd=(
     "$cc_bin"
@@ -194,7 +203,7 @@ else
     -I"$REPO_ROOT/tests"
     -o "$smoke_bin"
     "$REPO_ROOT/tests/conformance/codec_json_baseline_test.c"
-    "$REPO_ROOT/build/lib/libasx.a"
+    "$LIB_ASX"
   )
 
   set +e
@@ -233,7 +242,7 @@ else
   fi
 fi
 
-if [[ -f "$REPO_ROOT/build/lib/libasx.a" ]]; then
+if [[ -f "$LIB_ASX" ]]; then
   fixture_runner_src="$REPORT_DIR/${RUN_ID}-${MODE}.fixture_runner.c"
   fixture_runner_bin="$REPORT_DIR/${RUN_ID}-${MODE}.fixture_runner"
 
@@ -357,7 +366,7 @@ EOF
     -I"$REPO_ROOT/include" \
     -o "$fixture_runner_bin" \
     "$fixture_runner_src" \
-    "$REPO_ROOT/build/lib/libasx.a" >"$RUNNER_BUILD_LOG" 2>&1
+    "$LIB_ASX" >"$RUNNER_BUILD_LOG" 2>&1
   runner_build_rc=$?
   set -e
 

@@ -3,20 +3,22 @@
 ## Overview
 
 The ASX test suite verifies the ANSI C async runtime across multiple layers:
-unit tests, invariant tests, end-to-end scenario tests, benchmarks, and fuzz tests.
+unit tests, invariant tests, API ergonomics vignette tests, end-to-end scenario
+tests, benchmarks, and fuzz tests.
 
-**Current totals**: 763+ individual test cases across 43 unit suites, plus
-invariant suites, 10 e2e scenario families, differential fuzz harnesses,
+**Current totals**: 763+ individual test cases across unit suites, plus
+invariant suites, API ergonomics vignettes, e2e scenario families, differential fuzz harnesses,
 and runtime benchmarks.
 
 ## Running Tests
 
 ```bash
-make test              # Unit + invariant tests
-make test-unit         # Unit tests only (43 suites)
+make test              # Unit + invariant + vignette tests
+make test-unit         # Unit tests only
 make test-invariants   # Lifecycle invariant tests
+make test-vignettes    # API ergonomics usage vignettes (public headers)
 make test-e2e          # Core e2e scenario lanes
-make test-e2e-suite    # All 10 e2e families with unified manifest
+make test-e2e-suite    # All e2e families with unified manifest
 make bench             # Performance benchmarks (JSON output)
 make fuzz-smoke        # Differential fuzz smoke test
 make check             # Full gate: format + lint + build + test
@@ -81,6 +83,17 @@ Invariant tests verify structural properties that must hold across all
 valid inputs. They use exhaustive enumeration of state machine transitions.
 
 - **test_lifecycle_legality** (18 tests): Region/task/obligation transition matrix
+
+### API Ergonomics Vignettes (`tests/vignettes/`)
+
+These are compilable usage programs that exercise real public-header flows
+before API/ABI freeze (`make test-vignettes`):
+
+- `vignette_lifecycle.c` — region/task lifecycle and drain/close patterns
+- `vignette_obligations.c` — reserve/commit/abort obligation protocol
+- `vignette_budgets.c` — budget construction and exhaustion handling
+- `vignette_replay.c` — deterministic trace/replay and snapshot flows
+- `vignette_hooks.c` — freestanding runtime hook integration
 
 ### End-to-End Tests (`tests/e2e/`)
 

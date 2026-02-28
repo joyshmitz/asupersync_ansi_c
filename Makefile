@@ -190,11 +190,16 @@ INVARIANT_TEST_SRC := $(sort $(INVARIANT_TEST_SRC))
 
 UNIT_TEST_BIN := $(patsubst tests/%.c,$(TEST_DIR)/%,$(UNIT_TEST_SRC))
 INV_TEST_BIN  := $(patsubst tests/%.c,$(TEST_DIR)/%,$(INVARIANT_TEST_SRC))
+VIGNETTE_TEST_SRC := $(wildcard tests/vignettes/vignette_*.c)
+VIGNETTE_TEST_SRC := $(sort $(VIGNETTE_TEST_SRC))
+VIGNETTE_TEST_BIN := $(patsubst tests/%.c,$(TEST_DIR)/%,$(VIGNETTE_TEST_SRC))
 
 # ---------------------------------------------------------------------------
 # Test include path (adds tests/ for test_harness.h)
 # ---------------------------------------------------------------------------
 TEST_CFLAGS := $(ALL_CFLAGS) -I$(CURDIR)/tests -I$(CURDIR)/src
+VIGNETTE_CFLAGS := $(STD_FLAGS) $(WARN_FLAGS) $(OPT_FLAGS) $(BITS_FLAGS) \
+                   $(INC_FLAGS) $(PROFILE_DEF) $(CODEC_DEF) $(DET_DEF) $(CFLAGS)
 
 # ---------------------------------------------------------------------------
 # E2E scripts
@@ -232,7 +237,7 @@ E2E_VERTICAL_SCRIPTS := \
 .PHONY: all build clean install uninstall
 .PHONY: format-check lint lint-docs lint-checkpoint lint-anti-butchering lint-evidence lint-semantic-delta lint-static-analysis
 .PHONY: model-check
-.PHONY: test test-unit test-invariants test-e2e test-e2e-vertical
+.PHONY: test test-unit test-invariants test-vignettes test-e2e test-e2e-vertical
 .PHONY: conformance codec-equivalence profile-parity
 .PHONY: fuzz-smoke ci-embedded-matrix
 .PHONY: release bench
@@ -374,7 +379,7 @@ model-check: $(MODEL_CHECK_BIN)
 # ---------------------------------------------------------------------------
 # test — run all test suites
 # ---------------------------------------------------------------------------
-test: test-unit test-invariants
+test: test-unit test-invariants test-vignettes
 	@echo "[asx] test: all suites passed"
 
 # ---------------------------------------------------------------------------
@@ -462,6 +467,30 @@ test-invariants: $(INV_TEST_BIN)
 	fi
 
 # ---------------------------------------------------------------------------
+# test-vignettes — compile and run API ergonomics usage vignettes
+# ---------------------------------------------------------------------------
+test-vignettes: $(VIGNETTE_TEST_BIN)
+	@echo "[asx] test-vignettes: running $(words $(VIGNETTE_TEST_BIN)) vignette(s)..."
+	@if [ -z "$(strip $(VIGNETTE_TEST_BIN))" ]; then \
+		echo "[asx] test-vignettes: FAIL (no vignettes found)"; \
+		exit 1; \
+	else \
+		pass=0; fail=0; \
+		for t in $(VIGNETTE_TEST_BIN); do \
+			echo "  RUN  $$(basename $$t)"; \
+			if $$t; then \
+				echo "  PASS $$(basename $$t)"; \
+				pass=$$((pass + 1)); \
+			else \
+				echo "  FAIL $$(basename $$t)"; \
+				fail=$$((fail + 1)); \
+			fi; \
+		done; \
+		echo "[asx] test-vignettes: $$pass passed, $$fail failed"; \
+		[ $$fail -eq 0 ] || exit 1; \
+	fi
+
+# ---------------------------------------------------------------------------
 # test-e2e — run all canonical e2e scenario lanes
 # ---------------------------------------------------------------------------
 test-e2e:
@@ -516,11 +545,15 @@ test-e2e-suite: $(LIB_A)
 $(TEST_DIR)/invariant/%: tests/invariant/%.c $(LIB_A) | test-dirs
 	$(CC) $(TEST_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
 
+$(TEST_DIR)/vignettes/%: tests/vignettes/%.c $(LIB_A) | test-dirs
+	$(CC) $(VIGNETTE_CFLAGS) -o $@ $< $(LIB_A) $(ALL_LDFLAGS)
+
 test-dirs:
 	@mkdir -p $(TEST_DIR)/unit/core $(TEST_DIR)/unit/runtime \
 	          $(TEST_DIR)/unit/channel $(TEST_DIR)/unit/time \
 	          $(TEST_DIR)/invariant/lifecycle $(TEST_DIR)/invariant/quiescence \
-	          $(TEST_DIR)/invariant/model_check
+	          $(TEST_DIR)/invariant/model_check \
+	          $(TEST_DIR)/vignettes
 
 # ---------------------------------------------------------------------------
 # bench — performance benchmark suite (bd-1md.6)
@@ -810,9 +843,10 @@ help:
 	@echo "  lint-anti-butchering Anti-butchering proof-block gate"
 	@echo "  lint-evidence        Per-bead evidence linkage gate"
 	@echo "  lint-semantic-delta  Semantic delta budget gate"
-	@echo "  test               Run all tests (unit + invariant)"
+	@echo "  test               Run all tests (unit + invariant + vignettes)"
 	@echo "  test-unit          Unit tests per module"
 	@echo "  test-invariants    Lifecycle invariant tests"
+	@echo "  test-vignettes     API ergonomics usage vignettes (public headers)"
 	@echo "  test-e2e           Run all e2e scenario lanes"
 	@echo "  test-e2e-vertical  Run HFT/automotive/continuity e2e lanes"
 	@echo "  test-e2e-suite     Run ALL e2e families with unified manifest"

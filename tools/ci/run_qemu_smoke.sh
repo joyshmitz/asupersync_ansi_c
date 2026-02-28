@@ -31,6 +31,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ARTIFACT_DIR="$PROJECT_ROOT/tools/ci/artifacts/qemu"
 RUN_ID="qemu-$(date -u +%Y%m%dT%H%M%SZ)"
+BUILD_DIR="${BUILD_DIR:-$PROJECT_ROOT/build}"
+case "$BUILD_DIR" in
+    /*) ;;
+    *) BUILD_DIR="$PROJECT_ROOT/$BUILD_DIR" ;;
+esac
 
 # File-based counters (avoids subshell variable scoping issues in POSIX sh)
 COUNTER_DIR=""
@@ -170,6 +175,7 @@ cross_build_target() {
 
     build_log="$ARTIFACT_DIR/${RUN_ID}-build-${arch}.log"
     make -C "$PROJECT_ROOT" clean build test-unit \
+        BUILD_DIR="$BUILD_DIR" \
         TARGET="$cross_prefix" \
         PROFILE=EMBEDDED_ROUTER \
         CODEC=JSON \
@@ -181,7 +187,7 @@ cross_build_target() {
 # Find test binaries for a target
 # -----------------------------------------------------------------------
 find_test_binaries() {
-    build_test_dir="$PROJECT_ROOT/build/tests"
+    build_test_dir="$BUILD_DIR/tests"
     if [ -d "$build_test_dir" ]; then
         find "$build_test_dir" -type f -executable 2>/dev/null | sort || true
     fi

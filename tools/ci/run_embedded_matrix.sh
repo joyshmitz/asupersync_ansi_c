@@ -17,6 +17,7 @@ Each row emits JSONL with status, diagnostics, binary size, and startup metric s
 
 Environment:
   FAIL_ON_LAYOUT_REGRESSION 1 to fail the run when invariant layout deltas are flagged
+  BUILD_DIR=<dir>           build output directory (default: build)
 EOF
 }
 
@@ -83,6 +84,11 @@ dry_run=0
 artifact_root="${ARTIFACT_ROOT:-$SCRIPT_DIR/artifacts/build}"
 log_file=""
 FAIL_ON_LAYOUT_REGRESSION="${FAIL_ON_LAYOUT_REGRESSION:-0}"
+BUILD_DIR="${BUILD_DIR:-build}"
+
+if [[ "$BUILD_DIR" != /* ]]; then
+  BUILD_DIR="$REPO_ROOT/$BUILD_DIR"
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -133,7 +139,7 @@ for entry in "${MATRIX[@]}"; do
   IFS=':' read -r triplet compiler resource_class <<<"$entry"
   ((total += 1))
   output_log="$artifact_root/${run_id}-${triplet}.log"
-  make_cmd=(env "ASX_E2E_RESOURCE_CLASS=$resource_class" make -C "$REPO_ROOT" build "TARGET=$triplet" "PROFILE=EMBEDDED_ROUTER" "CODEC=BIN" "DETERMINISTIC=1")
+  make_cmd=(env "ASX_E2E_RESOURCE_CLASS=$resource_class" make -C "$REPO_ROOT" build "BUILD_DIR=$BUILD_DIR" "TARGET=$triplet" "PROFILE=EMBEDDED_ROUTER" "CODEC=BIN" "DETERMINISTIC=1")
 
   if [[ "$dry_run" == "1" ]]; then
     emit_jsonl "$log_file" "$run_id" "$triplet" "$compiler" "$resource_class" "planned" 0 \
@@ -159,8 +165,8 @@ for entry in "${MATRIX[@]}"; do
 
   if "${make_cmd[@]}" >"$output_log" 2>&1; then
     binary_size=0
-    if [[ -f "$REPO_ROOT/build/lib/libasx.a" ]]; then
-      binary_size="$(wc -c <"$REPO_ROOT/build/lib/libasx.a" | tr -d ' ')"
+    if [[ -f "$BUILD_DIR/lib/libasx.a" ]]; then
+      binary_size="$(wc -c <"$BUILD_DIR/lib/libasx.a" | tr -d ' ')"
     fi
     layout_err_file="$artifact_root/${run_id}-${triplet}.layout.err"
     if layout_report="$("$SCRIPT_DIR/generate_layout_budget_report.sh" \

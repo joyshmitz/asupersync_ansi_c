@@ -52,6 +52,12 @@ if [ -z "${E2E_PROJECT_ROOT:-}" ]; then
     E2E_PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 fi
 
+# Build directory contract (supports BUILD_DIR override from Make/CI)
+E2E_BUILD_DIR="${ASX_E2E_BUILD_DIR:-${BUILD_DIR:-build}}"
+if [[ "$E2E_BUILD_DIR" != /* ]]; then
+    E2E_BUILD_DIR="${E2E_PROJECT_ROOT}/${E2E_BUILD_DIR}"
+fi
+
 # -------------------------------------------------------------------
 # Run ID and timestamp
 # -------------------------------------------------------------------
@@ -91,8 +97,8 @@ E2E_TARGET="$(_e2e_detect_target)"
 # Artifact and log directories
 # -------------------------------------------------------------------
 
-E2E_ARTIFACT_DIR="${ASX_E2E_ARTIFACT_DIR:-${E2E_PROJECT_ROOT}/build/e2e-artifacts/${E2E_RUN_ID}}"
-E2E_LOG_DIR="${ASX_E2E_LOG_DIR:-${E2E_PROJECT_ROOT}/build/test-logs}"
+E2E_ARTIFACT_DIR="${ASX_E2E_ARTIFACT_DIR:-${E2E_BUILD_DIR}/e2e-artifacts/${E2E_RUN_ID}}"
+E2E_LOG_DIR="${ASX_E2E_LOG_DIR:-${E2E_BUILD_DIR}/test-logs}"
 
 # -------------------------------------------------------------------
 # Internal state
@@ -226,7 +232,7 @@ e2e_build() {
     local source="$1"
     local output="$2"
     local extra_flags="${3:-}"
-    local lib="${E2E_PROJECT_ROOT}/build/lib/libasx.a"
+    local lib="${E2E_BUILD_DIR}/lib/libasx.a"
     local cc="${CC:-gcc}"
 
     local cflags="-std=c99 -Wall -Wextra -Wpedantic -Werror"
