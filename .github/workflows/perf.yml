@@ -1,0 +1,49 @@
+# =============================================================================
+# perf.yml — HFT tail-latency and automotive deadline gates (bd-66l.1)
+#
+# Runs performance benchmarks on push to main only.
+# Warn/block per threshold (not on PRs to avoid noise).
+# =============================================================================
+
+name: Perf Gates
+
+on:
+  push:
+    branches: [main]
+
+env:
+  CI: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # perf-tail-deadline — HFT tail + automotive deadline gates
+  # ---------------------------------------------------------------------------
+  perf-tail-deadline:
+    name: "perf: tail-latency + deadline gates"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Build (release)
+        run: make release
+
+      - name: Run benchmarks
+        run: make bench
+
+      - name: Run benchmarks (JSON output)
+        run: make bench-json > bench-results.json 2>&1 || true
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ github.sha }}
+          path: |
+            bench-results.json
+            build/bench/
+          retention-days: 30

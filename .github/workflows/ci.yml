@@ -1,0 +1,280 @@
+# =============================================================================
+# ci.yml — CI workflow matrix for asx (bd-66l.1)
+#
+# Jobs mirror the gate structure from AGENTS.md section "CI/CD Pipeline":
+#   check            format + lint + strict build                    (blocking)
+#   unit-invariant   module + invariant test suites                  (blocking)
+#   conformance      Rust fixture parity + codec equivalence         (blocking)
+#   profile-parity   cross-profile semantic digest parity            (blocking)
+#   fuzz-parity      differential fuzzing smoke + minimization check (blocking)
+#   embedded-matrix  router-class cross-target builds + QEMU         (blocking)
+#   e2e              canonical e2e scenario suite with manifest       (blocking)
+#
+# Triggers: pull_request, push to main
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  FAIL_ON_MISSING_RUNNERS: 0
+  FAIL_ON_MISSING_CROSS_TOOLCHAINS: 0
+  CI: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # check — format + lint + strict build (warnings-as-errors)
+  # ---------------------------------------------------------------------------
+  check:
+    name: "check (format + lint + build)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cppcheck clang-format jq
+
+      - name: Format check
+        run: make format-check
+
+      - name: Lint (cppcheck)
+        run: make lint
+
+      - name: Lint (checkpoint coverage)
+        run: make lint-checkpoint
+
+      - name: Build (strict warnings-as-errors)
+        run: make build
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: build/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # unit-invariant — module + invariant test suites
+  # ---------------------------------------------------------------------------
+  unit-invariant:
+    name: "unit + invariant tests"
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Build
+        run: make build
+
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Invariant tests
+        run: make test-invariants
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-unit-invariant
+          path: |
+            build/test/
+            tools/ci/artifacts/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # e2e — canonical e2e scenario suite with deterministic run-manifest
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: "e2e scenario suite"
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Build
+        run: make build
+
+      - name: Run e2e suite with manifest
+        run: make test-e2e-suite
+
+      - name: Run vertical e2e lanes (HFT/automotive/continuity)
+        run: make test-e2e-vertical
+
+      - name: Upload e2e artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            build/test/
+            tools/ci/artifacts/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # conformance — Rust fixture parity + codec equivalence
+  # ---------------------------------------------------------------------------
+  conformance:
+    name: "conformance (Rust parity + codec equiv)"
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Build
+        run: make build
+
+      - name: Rust fixture conformance
+        run: make conformance
+
+      - name: Codec equivalence (JSON vs BIN)
+        run: make codec-equivalence
+
+      - name: Upload conformance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-reports
+          path: tools/ci/artifacts/conformance/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # profile-parity — cross-profile canonical digest parity
+  # ---------------------------------------------------------------------------
+  profile-parity:
+    name: "profile parity"
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Build
+        run: make build
+
+      - name: Profile parity check
+        run: make profile-parity
+
+      - name: Upload parity reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profile-parity-reports
+          path: tools/ci/artifacts/
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # fuzz-parity — differential fuzzing smoke + minimization check
+  # ---------------------------------------------------------------------------
+  fuzz-parity:
+    name: "differential fuzz smoke"
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq
+
+      - name: Build fuzz harness
+        run: make fuzz-build
+
+      - name: Fuzz smoke test
+        run: make fuzz-smoke
+
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: build/fuzz/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # compiler-matrix — GCC + Clang across profiles
+  # ---------------------------------------------------------------------------
+  compiler-matrix:
+    name: "compiler matrix (${{ matrix.compiler }}, ${{ matrix.profile }})"
+    runs-on: ubuntu-latest
+    needs: [check]
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        profile: [CORE, POSIX, FREESTANDING, EMBEDDED_ROUTER]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Clang
+        if: matrix.compiler == 'clang'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang
+
+      - name: Build (${{ matrix.compiler }}, ${{ matrix.profile }})
+        run: make build CC=${{ matrix.compiler }} PROFILE=${{ matrix.profile }}
+
+      - name: Test (${{ matrix.compiler }}, ${{ matrix.profile }})
+        run: make test-unit CC=${{ matrix.compiler }} PROFILE=${{ matrix.profile }}
+
+  # ---------------------------------------------------------------------------
+  # embedded-matrix — router-class cross-target builds + QEMU
+  # ---------------------------------------------------------------------------
+  embedded-matrix:
+    name: "embedded matrix"
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-compilation toolchains
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            gcc-mipsel-linux-gnu \
+            gcc-arm-linux-gnueabi \
+            gcc-aarch64-linux-gnu \
+            qemu-user-static \
+            jq
+
+      - name: Run embedded build matrix
+        run: make ci-embedded-matrix
+        env:
+          FAIL_ON_MISSING_CROSS_TOOLCHAINS: 0
+
+      - name: Upload embedded artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedded-artifacts
+          path: build/
+          retention-days: 7
