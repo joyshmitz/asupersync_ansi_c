@@ -198,7 +198,7 @@ typedef enum {
 static inline int asx_cancel_severity(asx_cancel_kind kind)
 {
     static const int severity[] = {0, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5};
-    return (int)kind <= 10 ? severity[(int)kind] : 5;
+    return (int)kind >= 0 && (int)kind <= 10 ? severity[(int)kind] : 5;
 }
 
 #endif /* ASX_IDS_H */

@@ -381,14 +381,8 @@ const char *asx_adapter_domain_str(asx_adapter_domain domain)
     return "Unknown";
 }
 
-const char *asx_adapter_mode_str(asx_adapter_mode mode)
-{
-    switch (mode) {
-    case ASX_ADAPTER_FALLBACK:    return "Fallback";
-    case ASX_ADAPTER_ACCELERATED: return "Accelerated";
-    default:                      return "Unknown";
-    }
-}
+/* asx_adapter_mode_str is defined in vertical_adapter.c — removed here
+ * to fix duplicate symbol linker error (ODR violation). */
 
 uint32_t asx_adapter_version(void)
 {

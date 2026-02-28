@@ -96,7 +96,7 @@ uint64_t asx_hft_histogram_percentile(const asx_hft_histogram *h,
     if (!h || h->total == 0) return 0;
     if (pct > 100) pct = 100;
 
-    target = (h->total * pct) / 100u;
+    target = (uint32_t)((uint64_t)h->total * pct / 100u);
     if (target == 0 && pct > 0) target = 1;
 
     cumulative = 0;

@@ -313,6 +313,10 @@ asx_status asx_send_permit_send(asx_send_permit *permit, uint64_t value)
         return ASX_E_DISCONNECTED;
     }
 
+    if (s->queue_len >= s->capacity) {
+        return ASX_E_CHANNEL_FULL;
+    }
+
     write_pos = (s->queue_head + s->queue_len) % s->capacity;
     s->queue[write_pos] = value;
     s->queue_len++;

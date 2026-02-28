@@ -320,17 +320,21 @@ void asx_auto_record_deadline(uint64_t deadline_ns,
 void asx_auto_record_checkpoint(uint64_t now_ns, uint64_t entity_id)
 {
     int would_trigger;
+    uint64_t prev_checkpoint_ns;
 
     ensure_auto_init();
 
     /* Check if this checkpoint would trigger a violation before recording */
     would_trigger = asx_auto_watchdog_would_trigger(&g_watchdog, now_ns);
 
+    /* Save previous checkpoint time BEFORE updating (otherwise interval = 0) */
+    prev_checkpoint_ns = g_watchdog.last_checkpoint_ns;
+
     asx_auto_watchdog_checkpoint(&g_watchdog, now_ns);
 
     /* Auto-log violations to audit ring */
     if (would_trigger) {
-        uint64_t interval = now_ns - g_watchdog.last_checkpoint_ns;
+        uint64_t interval = now_ns - prev_checkpoint_ns;
         asx_auto_audit_record(&g_audit, ASX_AUDIT_WATCHDOG_VIOLATION,
                                now_ns, entity_id, (int64_t)interval);
     }

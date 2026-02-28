@@ -79,8 +79,10 @@ static uint64_t compute_expected_loss(const asx_adaptive_surface *surface,
 {
     uint64_t total = 0;
     uint8_t i;
-    for (i = 0; i < surface->state_count; i++) {
-        ASX_CHECKPOINT_WAIVER("bounded: state_count <= ASX_ADAPTIVE_MAX_ACTIONS");
+    uint8_t count = surface->state_count <= ASX_ADAPTIVE_MAX_ACTIONS
+                  ? surface->state_count : ASX_ADAPTIVE_MAX_ACTIONS;
+    for (i = 0; i < count; i++) {
+        ASX_CHECKPOINT_WAIVER("bounded: count clamped to ASX_ADAPTIVE_MAX_ACTIONS");
         uint32_t loss = surface->loss_fn(surface->loss_ctx, action, i);
         /* loss is fp 16.16, posterior is fp 0.32
          * product is fp 16.48; shift right 32 to get fp 16.16 */

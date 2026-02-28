@@ -25,6 +25,7 @@ asx_status asx_quiescence_check(asx_region_id id)
 {
     asx_region_slot *r;
     asx_status st;
+    uint32_t i;
 
     st = asx_region_slot_lookup(id, &r);
     if (st != ASX_OK) return st;
@@ -35,6 +36,17 @@ asx_status asx_quiescence_check(asx_region_id id)
     }
     if (r->task_count > 0) {
         return ASX_E_QUIESCENCE_TASKS_LIVE;
+    }
+
+    /* Q3: All obligations in this region must be resolved (committed or
+     * aborted). An unresolved obligation blocks quiescence per the formal
+     * spec (QUIESCENCE_FINALIZATION_INVARIANTS.md §1.1). */
+    for (i = 0; i < g_obligation_count; i++) {
+        if (!g_obligations[i].alive) continue;
+        if (g_obligations[i].region != id) continue;
+        if (g_obligations[i].state == ASX_OBLIGATION_RESERVED) {
+            return ASX_E_OBLIGATIONS_UNRESOLVED;
+        }
     }
 
     return ASX_OK;
