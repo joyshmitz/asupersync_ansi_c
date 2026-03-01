@@ -60,7 +60,8 @@ asx_status asx_resource_snapshot_get(asx_resource_kind kind,
     out->kind      = kind;
     out->capacity  = asx_resource_capacity(kind);
     out->used      = asx_resource_used(kind);
-    out->remaining = out->capacity - out->used;
+    out->remaining = (out->used >= out->capacity) ? 0
+                   : out->capacity - out->used;
     return ASX_OK;
 }
 

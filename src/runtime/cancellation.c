@@ -92,15 +92,27 @@ asx_status asx_task_cancel_with_origin(asx_task_id id,
 {
     asx_task_slot *t;
     asx_status st;
+    int was_pending;
+    asx_cancel_kind old_kind;
+
+    /* Capture pre-cancel state to decide if origin should be updated */
+    st = asx_task_slot_lookup(id, &t);
+    if (st != ASX_OK) return st;
+
+    was_pending = t->cancel_pending;
+    old_kind = t->cancel_reason.kind;
 
     st = asx_task_cancel(id, kind);
     if (st != ASX_OK) return st;
 
-    st = asx_task_slot_lookup(id, &t);
-    if (st != ASX_OK) return st;
-
-    t->cancel_reason.origin_region = origin_region;
-    t->cancel_reason.origin_task = origin_task;
+    /* Only set origin if this was the first cancel or if the cancel
+     * was actually strengthened (higher severity). Otherwise, the
+     * existing stronger cancel's origin attribution is preserved. */
+    if (!was_pending ||
+        asx_cancel_severity(kind) > asx_cancel_severity(old_kind)) {
+        t->cancel_reason.origin_region = origin_region;
+        t->cancel_reason.origin_task = origin_task;
+    }
 
     return ASX_OK;
 }

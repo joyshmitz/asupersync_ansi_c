@@ -176,6 +176,8 @@ asx_status asx_scheduler_run(asx_region_id region, asx_budget *budget)
 
             /* Transition Created → Running on first poll */
             if (t->state == ASX_TASK_CREATED) {
+                (void)asx_ghost_check_task_transition(tid, t->state,
+                                                      ASX_TASK_RUNNING);
                 t->state = ASX_TASK_RUNNING;
             }
 

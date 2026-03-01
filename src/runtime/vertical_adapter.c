@@ -304,9 +304,9 @@ int asx_adapter_isomorphism_check(asx_adapter_id id,
         if (fb.decision_digest == ac.decision_digest) {
             matches++;
         } else {
-            if (out->divergence_index == 0 && i > 0) {
-                out->divergence_index = i;
-            } else if (matches == i) {
+            /* Record the first divergence index: matches==i means all
+             * preceding entries matched, so this is the earliest mismatch. */
+            if (matches == i) {
                 out->divergence_index = i;
             }
         }
