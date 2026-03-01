@@ -17,6 +17,7 @@
 
 #include "test_harness.h"
 #include <asx/runtime/adapter.h>
+#include <stdint.h>
 #include <string.h>
 
 /* ===================================================================
@@ -83,6 +84,15 @@ TEST(hft_fallback_zero_capacity)
     asx_adapter_hft_fallback(0, 0, &d);
     ASSERT_EQ(d.triggered, 1);
     ASSERT_EQ(d.load_pct, 100);
+}
+
+TEST(hft_fallback_large_values_do_not_wrap)
+{
+    asx_adapter_decision d;
+    asx_adapter_hft_fallback(UINT32_MAX, UINT32_MAX, &d);
+    ASSERT_EQ(d.load_pct, 100u);
+    ASSERT_EQ(d.triggered, 1);
+    ASSERT_EQ(d.admit_status, ASX_E_ADMISSION_CLOSED);
 }
 
 /* ===================================================================
@@ -206,6 +216,24 @@ TEST(router_accel_r3_scales_up)
     asx_adapter_decision d;
     asx_adapter_router_decide(140, 100, ASX_CLASS_R3, &d);
     ASSERT_EQ(d.triggered, 1);
+}
+
+TEST(router_accel_r1_capacity_one_keeps_nonzero_scale)
+{
+    asx_adapter_decision d;
+    asx_adapter_router_decide(0, 1, ASX_CLASS_R1, &d);
+    ASSERT_EQ(d.triggered, 0);
+    ASSERT_EQ(d.load_pct, 0u);
+    ASSERT_EQ(d.admit_status, ASX_OK);
+}
+
+TEST(router_accel_r3_large_capacity_does_not_overflow_scale)
+{
+    asx_adapter_decision d;
+    asx_adapter_router_decide(0, 0x80000000u, ASX_CLASS_R3, &d);
+    ASSERT_EQ(d.triggered, 0);
+    ASSERT_EQ(d.load_pct, 0u);
+    ASSERT_EQ(d.admit_status, ASX_OK);
 }
 
 TEST(router_accel_zero_capacity)
@@ -431,6 +459,7 @@ int main(void)
     RUN_TEST(hft_fallback_below_threshold_admits);
     RUN_TEST(hft_fallback_at_threshold_rejects);
     RUN_TEST(hft_fallback_zero_capacity);
+    RUN_TEST(hft_fallback_large_values_do_not_wrap);
 
     /* Automotive adapter */
     RUN_TEST(auto_accel_below_threshold_admits);
@@ -446,6 +475,8 @@ int main(void)
     RUN_TEST(router_accel_at_threshold_rejects);
     RUN_TEST(router_accel_r1_scales_down);
     RUN_TEST(router_accel_r3_scales_up);
+    RUN_TEST(router_accel_r1_capacity_one_keeps_nonzero_scale);
+    RUN_TEST(router_accel_r3_large_capacity_does_not_overflow_scale);
     RUN_TEST(router_accel_zero_capacity);
     RUN_TEST(router_fallback_below_threshold);
     RUN_TEST(router_fallback_at_threshold);

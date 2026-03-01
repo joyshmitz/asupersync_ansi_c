@@ -13,6 +13,7 @@
 
 #include "../../test_harness.h"
 #include <asx/runtime/hft_instrument.h>
+#include <stdint.h>
 #include <string.h>
 
 /* ===================================================================
@@ -382,6 +383,19 @@ TEST(overload_zero_capacity)
     ASSERT_EQ((int)dec.admit_status, (int)ASX_E_RESOURCE_EXHAUSTED);
 }
 
+TEST(overload_large_values_do_not_wrap)
+{
+    asx_overload_policy pol;
+    asx_overload_decision dec;
+
+    asx_overload_policy_init(&pol);
+    asx_overload_evaluate(&pol, UINT32_MAX, UINT32_MAX, &dec);
+
+    ASSERT_EQ(dec.load_pct, 100u);
+    ASSERT_EQ(dec.triggered, 1);
+    ASSERT_EQ((int)dec.admit_status, (int)ASX_E_ADMISSION_CLOSED);
+}
+
 TEST(overload_mode_str)
 {
     ASSERT_STR_EQ(asx_overload_mode_str(ASX_OVERLOAD_REJECT), "REJECT");
@@ -592,6 +606,7 @@ int main(void)
     RUN_TEST(overload_shed_clamped_to_used);
     RUN_TEST(overload_backpressure_would_block);
     RUN_TEST(overload_zero_capacity);
+    RUN_TEST(overload_large_values_do_not_wrap);
     RUN_TEST(overload_mode_str);
     RUN_TEST(overload_deterministic_replay);
 

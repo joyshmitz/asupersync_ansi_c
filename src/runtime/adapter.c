@@ -18,6 +18,7 @@
 /* ASX_CHECKPOINT_WAIVER_FILE() — no kernel loops; pure function evaluations */
 
 #include <asx/runtime/adapter.h>
+#include <stdint.h>
 #include <string.h>
 
 /* -------------------------------------------------------------------
@@ -49,6 +50,46 @@ static uint64_t decision_hash(const asx_adapter_decision *d)
     return h;
 }
 
+static uint32_t percent_load_u32(uint32_t used, uint32_t capacity)
+{
+    uint64_t pct;
+
+    if (capacity == 0) {
+        return 100u;
+    }
+
+    pct = ((uint64_t)used * 100u) / (uint64_t)capacity;
+    if (pct > UINT32_MAX) {
+        return UINT32_MAX;
+    }
+    return (uint32_t)pct;
+}
+
+static uint32_t scale_capacity_for_class(uint32_t capacity,
+                                          asx_resource_class rclass)
+{
+    switch (rclass) {
+    case ASX_CLASS_R1:
+        if (capacity == 0u) {
+            return 0u;
+        }
+        /* R1 is stricter, but never collapse non-zero capacity to zero. */
+        return capacity > 1u ? (capacity / 2u) : 1u;
+
+    case ASX_CLASS_R3:
+        /* Saturate instead of overflowing on large capacities. */
+        if (capacity > (UINT32_MAX / 2u)) {
+            return UINT32_MAX;
+        }
+        return capacity * 2u;
+
+    case ASX_CLASS_R2:
+    case ASX_CLASS_COUNT:
+    default:
+        return capacity;
+    }
+}
+
 /* -------------------------------------------------------------------
  * Internal: CORE fallback implementation (shared by all domains)
  *
@@ -72,7 +113,7 @@ static void core_fallback_decide(uint32_t used, uint32_t capacity,
         return;
     }
 
-    load_pct = (used * 100u) / capacity;
+    load_pct = percent_load_u32(used, capacity);
     out->load_pct = load_pct;
 
     if (load_pct >= 90) {
@@ -109,7 +150,7 @@ void asx_adapter_hft_decide(uint32_t used, uint32_t capacity,
         return;
     }
 
-    load_pct = (used * 100u) / capacity;
+    load_pct = percent_load_u32(used, capacity);
     out->load_pct = load_pct;
 
     if (load_pct >= 85) {
@@ -155,7 +196,7 @@ void asx_adapter_auto_decide(uint32_t used, uint32_t capacity,
         return;
     }
 
-    load_pct = (used * 100u) / capacity;
+    load_pct = percent_load_u32(used, capacity);
     out->load_pct = load_pct;
 
     if (load_pct >= 90) {
@@ -203,14 +244,8 @@ void asx_adapter_router_decide(uint32_t used, uint32_t capacity,
     out->path_used = ASX_ADAPTER_ACCELERATED;
     out->mode = ASX_OVERLOAD_REJECT;
 
-    /* Scale capacity by resource class */
-    switch (rclass) {
-    case ASX_CLASS_R1:    scaled_capacity = capacity / 2; break;
-    case ASX_CLASS_R3:    scaled_capacity = capacity * 2; break;
-    case ASX_CLASS_R2:    scaled_capacity = capacity;     break;
-    case ASX_CLASS_COUNT: scaled_capacity = capacity;     break;
-    default:              scaled_capacity = capacity;     break;
-    }
+    /* Scale capacity by resource class. */
+    scaled_capacity = scale_capacity_for_class(capacity, rclass);
 
     if (scaled_capacity == 0) {
         out->triggered = 1;
@@ -220,7 +255,7 @@ void asx_adapter_router_decide(uint32_t used, uint32_t capacity,
         return;
     }
 
-    load_pct = (uint32_t)((uint64_t)used * 100u / scaled_capacity);
+    load_pct = percent_load_u32(used, scaled_capacity);
     out->load_pct = load_pct;
 
     if (load_pct >= 75) {
@@ -235,7 +270,7 @@ void asx_adapter_router_decide(uint32_t used, uint32_t capacity,
      * (REJECT at 90% of original capacity) would reject. This ensures
      * the isomorphism contract holds even with R3 capacity scaling. */
     if (!out->triggered && capacity > 0) {
-        uint32_t core_pct = (used * 100u) / capacity;
+        uint32_t core_pct = percent_load_u32(used, capacity);
         if (core_pct >= 90) {
             out->triggered = 1;
             out->load_pct = core_pct;

@@ -11,6 +11,7 @@
  */
 
 #include <asx/runtime/hft_instrument.h>
+#include <stdint.h>
 #include <string.h>
 
 /* ASX_CHECKPOINT_WAIVER_FILE("hft-instrument: all loops bounded by ASX_HFT_HISTOGRAM_BINS (16)") */
@@ -48,6 +49,21 @@ static uint64_t bin_mid(uint32_t bin)
     if (bin == 0) return 0;
     if (bin == 1) return 1;
     return (UINT64_C(1) << (bin - 1u)) + (UINT64_C(1) << (bin - 2u));
+}
+
+static uint32_t percent_load_u32(uint32_t used, uint32_t capacity)
+{
+    uint64_t pct;
+
+    if (capacity == 0u) {
+        return 100u;
+    }
+
+    pct = ((uint64_t)used * 100u) / (uint64_t)capacity;
+    if (pct > UINT32_MAX) {
+        return UINT32_MAX;
+    }
+    return (uint32_t)pct;
 }
 
 /* -------------------------------------------------------------------
@@ -234,7 +250,7 @@ void asx_overload_evaluate(const asx_overload_policy *pol,
         return;
     }
 
-    load_pct = (used * 100u) / capacity;
+    load_pct = percent_load_u32(used, capacity);
     decision->load_pct = load_pct;
 
     if (load_pct < pol->threshold_pct) {
