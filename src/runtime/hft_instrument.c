@@ -321,7 +321,7 @@ void asx_hft_gate_evaluate(const asx_hft_gate *gate,
         uint32_t cumulative = 0;
         uint32_t i;
 
-        target = (hist->total * 999u) / 1000u;
+        target = (uint32_t)((uint64_t)hist->total * 999u / 1000u);
         if (target == 0 && hist->total > 0) target = 1;
 
         for (i = 0; i < ASX_HFT_HISTOGRAM_BINS; i++) {
@@ -347,7 +347,7 @@ void asx_hft_gate_evaluate(const asx_hft_gate *gate,
         uint32_t cumulative = 0;
         uint32_t i;
 
-        target = (hist->total * 9999u) / 10000u;
+        target = (uint32_t)((uint64_t)hist->total * 9999u / 10000u);
         if (target == 0 && hist->total > 0) target = 1;
 
         for (i = 0; i < ASX_HFT_HISTOGRAM_BINS; i++) {

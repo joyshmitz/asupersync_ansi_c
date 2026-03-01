@@ -220,7 +220,7 @@ void asx_adapter_router_decide(uint32_t used, uint32_t capacity,
         return;
     }
 
-    load_pct = (used * 100u) / scaled_capacity;
+    load_pct = (uint32_t)((uint64_t)used * 100u / scaled_capacity);
     out->load_pct = load_pct;
 
     if (load_pct >= 75) {
