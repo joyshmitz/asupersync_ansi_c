@@ -22,7 +22,7 @@ use asupersync::record::task::TaskRecord;
 use asupersync::trace::event::{TraceData, TraceEvent};
 use asupersync::types::Budget;
 use asupersync::types::cancel::{CancelKind, CancelReason};
-use asupersync::types::id::{RegionId, TaskId, ObligationId};
+use asupersync::types::id::{ObligationId, RegionId, TaskId};
 use asupersync::util::arena::ArenaIndex;
 // BTreeMap not needed — handle tracking uses Vec
 
@@ -31,8 +31,8 @@ use asupersync::util::arena::ArenaIndex;
 // =============================================================================
 
 const FUZZ_MAX_OPS: u32 = 128;
-const FUZZ_MAX_REGIONS: u32 = 8;   // ASX_MAX_REGIONS
-const FUZZ_MAX_TASKS: u32 = 64;    // ASX_MAX_TASKS
+const FUZZ_MAX_REGIONS: u32 = 8; // ASX_MAX_REGIONS
+const FUZZ_MAX_TASKS: u32 = 64; // ASX_MAX_TASKS
 const FUZZ_MAX_OBLIGATIONS: u32 = 64;
 const FUZZ_MAX_CHANNELS: u32 = 16; // ASX_MAX_CHANNELS
 const FUZZ_MAX_TIMERS: u32 = 32;
@@ -40,28 +40,28 @@ const FUZZ_MAX_TIMERS: u32 = 32;
 const OP_KIND_COUNT: u32 = 21;
 
 // Weight table — must match C harness exactly
-const OP_WEIGHTS: [u32; 21] = [
+const OP_WEIGHTS: [u32; OP_KIND_COUNT as usize] = [
     12, // SpawnRegion
-     8, // CloseRegion
-     3, // PoisonRegion
+    8,  // CloseRegion
+    3,  // PoisonRegion
     15, // SpawnTask
     10, // CancelTask
-     8, // ReserveObligation
-     7, // CommitObligation
-     5, // AbortObligation
-     6, // ChannelCreate
-     5, // ChannelReserve
-     5, // ChannelSend
-     3, // ChannelAbort
-     5, // ChannelRecv
-     3, // ChannelCloseTx
-     3, // ChannelCloseRx
-     6, // TimerRegister
-     4, // TimerCancel
-     5, // AdvanceTime
+    8,  // ReserveObligation
+    7,  // CommitObligation
+    5,  // AbortObligation
+    6,  // ChannelCreate
+    5,  // ChannelReserve
+    5,  // ChannelSend
+    3,  // ChannelAbort
+    5,  // ChannelRecv
+    3,  // ChannelCloseTx
+    3,  // ChannelCloseRx
+    6,  // TimerRegister
+    4,  // TimerCancel
+    5,  // AdvanceTime
     12, // SchedulerRun
-     5, // RegionDrain
-     4, // QuiescenceCheck
+    5,  // RegionDrain
+    4,  // QuiescenceCheck
 ];
 
 // =============================================================================
@@ -77,11 +77,11 @@ impl FuzzRng {
         let mut rng = FuzzRng { s: [0; 4] };
         // splitmix64 initialization — identical to C
         let mut z = seed;
-        for i in 0..4 {
+        for slot in &mut rng.s {
             z = z.wrapping_add(0x9e3779b97f4a7c15);
             z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
             z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-            rng.s[i] = z ^ (z >> 31);
+            *slot = z ^ (z >> 31);
         }
         rng
     }
@@ -154,27 +154,27 @@ impl FuzzHasher {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 enum FuzzOpKind {
-    SpawnRegion       = 0,
-    CloseRegion       = 1,
-    PoisonRegion      = 2,
-    SpawnTask         = 3,
-    CancelTask        = 4,
+    SpawnRegion = 0,
+    CloseRegion = 1,
+    PoisonRegion = 2,
+    SpawnTask = 3,
+    CancelTask = 4,
     ReserveObligation = 5,
-    CommitObligation  = 6,
-    AbortObligation   = 7,
-    ChannelCreate     = 8,
-    ChannelReserve    = 9,
-    ChannelSend       = 10,
-    ChannelAbort      = 11,
-    ChannelRecv       = 12,
-    ChannelCloseTx    = 13,
-    ChannelCloseRx    = 14,
-    TimerRegister     = 15,
-    TimerCancel       = 16,
-    AdvanceTime       = 17,
-    SchedulerRun      = 18,
-    RegionDrain       = 19,
-    QuiescenceCheck   = 20,
+    CommitObligation = 6,
+    AbortObligation = 7,
+    ChannelCreate = 8,
+    ChannelReserve = 9,
+    ChannelSend = 10,
+    ChannelAbort = 11,
+    ChannelRecv = 12,
+    ChannelCloseTx = 13,
+    ChannelCloseRx = 14,
+    TimerRegister = 15,
+    TimerCancel = 16,
+    AdvanceTime = 17,
+    SchedulerRun = 18,
+    RegionDrain = 19,
+    QuiescenceCheck = 20,
 }
 
 impl FuzzOpKind {
@@ -254,8 +254,8 @@ fn pick_op(rng: &mut FuzzRng) -> FuzzOpKind {
     let total: u32 = OP_WEIGHTS.iter().sum();
     let r = rng.u32(total);
     let mut acc = 0u32;
-    for i in 0..OP_KIND_COUNT as usize {
-        acc += OP_WEIGHTS[i];
+    for (i, &weight) in OP_WEIGHTS.iter().enumerate() {
+        acc += weight;
         if r < acc {
             return FuzzOpKind::from_u32(i as u32);
         }
@@ -310,7 +310,6 @@ const ST_OK: i32 = 0;
 const ST_NOT_FOUND: i32 = -1;
 const ST_CAPACITY: i32 = -2;
 const ST_INVALID_STATE: i32 = -3;
-const ST_PENDING: i32 = -4;
 const ST_RESOURCE_EXHAUSTED: i32 = -5;
 
 // =============================================================================
@@ -437,7 +436,11 @@ fn execute_op(op: &FuzzOp, runtime: &mut LabRuntime, hs: &mut HandleState) -> i3
             // Poison = cancel with a reason
             let reason = CancelReason::new(CancelKind::FailFast);
             let source = hs.tasks.first().copied();
-            let _ = runtime.state.cancel_request(region_id, &reason, source);
+            let (_, wakes) = runtime
+                .state
+                .cancel_request(region_id, &reason, source)
+                .into_parts();
+            wakes.dispatch();
             ST_OK
         }
 
@@ -470,7 +473,11 @@ fn execute_op(op: &FuzzOp, runtime: &mut LabRuntime, hs: &mut HandleState) -> i3
             // Find the task's region
             let region_id_opt = runtime.state.task(task_id).map(|t| t.owner);
             if let Some(region_id) = region_id_opt {
-                let _ = runtime.state.cancel_request(region_id, &reason, Some(task_id));
+                let (_, wakes) = runtime
+                    .state
+                    .cancel_request(region_id, &reason, Some(task_id))
+                    .into_parts();
+                wakes.dispatch();
             }
             ST_OK
         }
@@ -635,20 +642,22 @@ fn extract_entity_id(ev: &TraceEvent) -> u64 {
         TraceData::Region { region, .. } => region.arena_index().index() as u64,
         TraceData::Obligation { obligation, .. } => obligation.arena_index().index() as u64,
         TraceData::Cancel { task, .. } => task.arena_index().index() as u64,
-        TraceData::Timer { timer_id, .. } => *timer_id as u64,
+        TraceData::Worker { job_id, .. } => *job_id,
+        TraceData::Budget { task, .. } => task.arena_index().index() as u64,
+        TraceData::Timer { timer_id, .. } => *timer_id,
         TraceData::Time { new, .. } => new.as_nanos(),
-        TraceData::IoRequested { token, .. } => *token as u64,
-        TraceData::IoReady { token, .. } => *token as u64,
-        TraceData::IoResult { token, .. } => *token as u64,
-        TraceData::IoError { token, .. } => *token as u64,
+        TraceData::IoRequested { token, .. } => *token,
+        TraceData::IoReady { token, .. } => *token,
+        TraceData::IoResult { token, .. } => *token,
+        TraceData::IoError { token, .. } => *token,
         TraceData::RngSeed { seed, .. } => *seed,
         TraceData::RngValue { value, .. } => *value,
-        TraceData::Checkpoint { sequence, .. } => *sequence as u64,
+        TraceData::Checkpoint { sequence, .. } => *sequence,
         TraceData::Futurelock { task, .. } => task.arena_index().index() as u64,
-        TraceData::Monitor { monitor_ref, .. } => *monitor_ref as u64,
-        TraceData::Down { monitor_ref, .. } => *monitor_ref as u64,
-        TraceData::Link { link_ref, .. } => *link_ref as u64,
-        TraceData::Exit { link_ref, .. } => *link_ref as u64,
+        TraceData::Monitor { monitor_ref, .. } => *monitor_ref,
+        TraceData::Down { monitor_ref, .. } => *monitor_ref,
+        TraceData::Link { link_ref, .. } => *link_ref,
+        TraceData::Exit { link_ref, .. } => *link_ref,
         TraceData::Message { .. } => 0,
         TraceData::Chaos { .. } => 0,
         TraceData::RegionCancel { region, .. } => region.arena_index().index() as u64,
@@ -668,15 +677,19 @@ fn verify_grammar(seed: u64, iterations: u64, max_ops: u32) {
 
         // Output scenario structure as JSON for comparison with C
         if i < 5 || i == iterations - 1 {
-            let ops_json: Vec<serde_json::Value> = sc.ops.iter().map(|op| {
-                serde_json::json!({
-                    "op": op.kind.name(),
-                    "idx_a": op.idx_a,
-                    "idx_b": op.idx_b,
-                    "arg_u32": op.arg_u32,
-                    "arg_u64": op.arg_u64,
+            let ops_json: Vec<serde_json::Value> = sc
+                .ops
+                .iter()
+                .map(|op| {
+                    serde_json::json!({
+                        "op": op.kind.name(),
+                        "idx_a": op.idx_a,
+                        "idx_b": op.idx_b,
+                        "arg_u32": op.arg_u32,
+                        "arg_u64": op.arg_u64,
+                    })
                 })
-            }).collect();
+                .collect();
 
             let record = serde_json::json!({
                 "kind": "grammar_verify",
@@ -689,7 +702,10 @@ fn verify_grammar(seed: u64, iterations: u64, max_ops: u32) {
         }
     }
 
-    eprintln!("[rust_fuzz] grammar verification complete: {} iterations", iterations);
+    eprintln!(
+        "[rust_fuzz] grammar verification complete: {} iterations",
+        iterations
+    );
 }
 
 // =============================================================================
@@ -702,16 +718,26 @@ fn verify_grammar_batch(num_seeds: u64, max_ops: u32) {
         let sc = generate_scenario(&mut rng, max_ops);
 
         // Output exact same JSON format as C generate_grammar_vectors_jsonl.c
-        let ops_json: Vec<String> = sc.ops.iter().map(|op| {
-            format!(
-                "{{\"op\":\"{}\",\"idx_a\":{},\"idx_b\":{},\"arg_u32\":{},\"arg_u64\":{}}}",
-                op.kind.name(), op.idx_a, op.idx_b, op.arg_u32, op.arg_u64
-            )
-        }).collect();
+        let ops_json: Vec<String> = sc
+            .ops
+            .iter()
+            .map(|op| {
+                format!(
+                    "{{\"op\":\"{}\",\"idx_a\":{},\"idx_b\":{},\"arg_u32\":{},\"arg_u64\":{}}}",
+                    op.kind.name(),
+                    op.idx_a,
+                    op.idx_b,
+                    op.arg_u32,
+                    op.arg_u64
+                )
+            })
+            .collect();
 
         println!(
             "{{\"seed\":{},\"op_count\":{},\"ops\":[{}]}}",
-            sc.seed, sc.ops.len(), ops_json.join(",")
+            sc.seed,
+            sc.ops.len(),
+            ops_json.join(",")
         );
     }
 }
@@ -741,10 +767,14 @@ fn digest_seeds_stdin() {
             Err(_) => break,
         };
         let line = line.trim().to_string();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 2 { continue; }
+        if parts.len() < 2 {
+            continue;
+        }
 
         let scenario_seed: u64 = parts[0].parse().unwrap_or(0);
         let op_count: usize = parts[1].parse().unwrap_or(0);
@@ -752,17 +782,28 @@ fn digest_seeds_stdin() {
         let mut ops = Vec::with_capacity(op_count);
         let mut i = 2;
         for _ in 0..op_count {
-            if i + 4 >= parts.len() { break; }
+            if i + 4 >= parts.len() {
+                break;
+            }
             let kind = FuzzOpKind::from_u32(parts[i].parse().unwrap_or(0));
-            let idx_a: u32 = parts[i+1].parse().unwrap_or(0);
-            let idx_b: u32 = parts[i+2].parse().unwrap_or(0);
-            let arg_u32: u32 = parts[i+3].parse().unwrap_or(0);
-            let arg_u64: u64 = parts[i+4].parse().unwrap_or(0);
-            ops.push(FuzzOp { kind, idx_a, idx_b, arg_u32, arg_u64 });
+            let idx_a: u32 = parts[i + 1].parse().unwrap_or(0);
+            let idx_b: u32 = parts[i + 2].parse().unwrap_or(0);
+            let arg_u32: u32 = parts[i + 3].parse().unwrap_or(0);
+            let arg_u64: u64 = parts[i + 4].parse().unwrap_or(0);
+            ops.push(FuzzOp {
+                kind,
+                idx_a,
+                idx_b,
+                arg_u32,
+                arg_u64,
+            });
             i += 5;
         }
 
-        let sc = FuzzScenario { seed: scenario_seed, ops };
+        let sc = FuzzScenario {
+            seed: scenario_seed,
+            ops,
+        };
         let exec = execute_scenario(&sc);
         println!("{}\t{:016x}", scenario_seed, exec.digest);
     }
@@ -776,15 +817,19 @@ fn dump_scenario(seed: u64, max_ops: u32) {
     let mut rng = FuzzRng::new(seed);
     let sc = generate_scenario(&mut rng, max_ops);
 
-    let ops_json: Vec<serde_json::Value> = sc.ops.iter().map(|op| {
-        serde_json::json!({
-            "op": op.kind.name(),
-            "idx_a": op.idx_a,
-            "idx_b": op.idx_b,
-            "arg_u32": op.arg_u32,
-            "arg_u64": op.arg_u64,
+    let ops_json: Vec<serde_json::Value> = sc
+        .ops
+        .iter()
+        .map(|op| {
+            serde_json::json!({
+                "op": op.kind.name(),
+                "idx_a": op.idx_a,
+                "idx_b": op.idx_b,
+                "arg_u32": op.arg_u32,
+                "arg_u64": op.arg_u64,
+            })
         })
-    }).collect();
+        .collect();
 
     let record = serde_json::json!({
         "seed": sc.seed,
@@ -817,7 +862,7 @@ fn fuzz_run(seed: u64, iterations: u64, max_ops: u32, verbose: bool) -> i32 {
         let exec_a = execute_scenario(&sc);
         let exec_b = execute_scenario(&sc);
 
-        if exec_a.digest != exec_b.digest {
+        if exec_a.digest != exec_b.digest || exec_a.results != exec_b.results {
             determinism_failures += 1;
             let record = serde_json::json!({
                 "kind": "determinism_failure",
@@ -825,6 +870,8 @@ fn fuzz_run(seed: u64, iterations: u64, max_ops: u32, verbose: bool) -> i32 {
                 "seed": sc.seed,
                 "digest_a": format!("{:016x}", exec_a.digest),
                 "digest_b": format!("{:016x}", exec_b.digest),
+                "results_a": exec_a.results,
+                "results_b": exec_b.results,
             });
             println!("{}", serde_json::to_string(&record).unwrap());
         }
@@ -833,7 +880,8 @@ fn fuzz_run(seed: u64, iterations: u64, max_ops: u32, verbose: bool) -> i32 {
             let elapsed = start.elapsed().as_secs_f64();
             eprintln!(
                 "[rust_fuzz] progress: {}/{} ({:.1}/s) det_fail={}",
-                iter, iterations,
+                iter,
+                iterations,
                 if iter > 0 { iter as f64 / elapsed } else { 0.0 },
                 determinism_failures
             );
@@ -856,7 +904,8 @@ fn fuzz_run(seed: u64, iterations: u64, max_ops: u32, verbose: bool) -> i32 {
     eprintln!(
         "[rust_fuzz] complete: {} iterations in {:.3}s ({:.1}/s)\n\
          [rust_fuzz] determinism_failures={}",
-        iterations, elapsed,
+        iterations,
+        elapsed,
         iterations as f64 / elapsed,
         determinism_failures
     );
@@ -865,7 +914,7 @@ fn fuzz_run(seed: u64, iterations: u64, max_ops: u32, verbose: bool) -> i32 {
         eprintln!("[rust_fuzz] FAIL: determinism issues detected");
         1
     } else {
-        eprintln!("[rust_fuzz] PASS: no issues detected");
+        eprintln!("[rust_fuzz] PASS: no determinism failures detected");
         0
     }
 }

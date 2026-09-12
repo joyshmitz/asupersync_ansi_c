@@ -9,20 +9,20 @@
 //!   fixture_capture --scenario-dir path/to/scenarios/ [--output-dir path/to/fixtures/]
 //!   fixture_capture --fixture-dir path/to/fixtures/rust_reference/
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use asupersync::lab::config::LabConfig;
 use asupersync::lab::runtime::LabRuntime;
-use asupersync::lab::scenario::{Scenario, FaultAction};
+use asupersync::lab::scenario::{FaultAction, Scenario};
 use asupersync::record::obligation::ObligationKind;
 use asupersync::record::task::TaskRecord;
 use asupersync::trace::event::{TraceData, TraceEvent};
-use asupersync::types::{Budget, Time};
 use asupersync::types::cancel::{CancelKind, CancelReason};
-use asupersync::types::id::{RegionId, TaskId, ObligationId};
+use asupersync::types::id::{ObligationId, RegionId, TaskId};
+use asupersync::types::{Budget, Time};
 use asupersync::util::arena::ArenaIndex;
 
 fn main() {
@@ -118,11 +118,7 @@ fn run_fixture_dir(dir: &Path) {
         let mut files: Vec<_> = std::fs::read_dir(&family_path)
             .expect("read family dir")
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .extension()
-                    .map_or(false, |ext| ext == "json")
-            })
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
         files.sort_by_key(|e| e.path());
 
@@ -137,11 +133,8 @@ fn run_fixture_dir(dir: &Path) {
                     let events_count = fixture["expected_events"].as_array().map_or(0, |a| a.len());
 
                     // Write back in place
-                    std::fs::write(
-                        &file_path,
-                        serde_json::to_string_pretty(&fixture).unwrap(),
-                    )
-                    .expect("write fixture");
+                    std::fs::write(&file_path, serde_json::to_string_pretty(&fixture).unwrap())
+                        .expect("write fixture");
 
                     captured += 1;
                     // JSONL output
@@ -188,19 +181,17 @@ fn run_fixture_dir(dir: &Path) {
 
 fn chrono_now() -> String {
     // Simple ISO-8601 timestamp without chrono dependency
-    let output = Command::new("date")
+    Command::new("date")
         .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
-    output
+        .unwrap_or_else(|_| "unknown".to_string())
 }
 
 fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read error: {e}"))?;
-    let placeholder: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("parse error: {e}"))?;
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read error: {e}"))?;
+    let placeholder: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("parse error: {e}"))?;
 
     let scenario_id = placeholder["scenario_id"]
         .as_str()
@@ -210,10 +201,7 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
         .as_str()
         .unwrap_or("ASX_PROFILE_CORE")
         .to_string();
-    let codec = placeholder["codec"]
-        .as_str()
-        .unwrap_or("json")
-        .to_string();
+    let codec = placeholder["codec"].as_str().unwrap_or("json").to_string();
     let seed = placeholder["seed"].as_u64().unwrap_or(42);
 
     let ops = placeholder["input"]["ops"]
@@ -278,11 +266,14 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
                 let _ = (polls, cost);
                 // budget_meet is a verification op — it checks that Budget::meet produces
                 // the expected result. We just trace it as a user event.
-                let seq = runtime.state.next_trace_seq();
                 let now = runtime.now();
-                runtime.state.trace.push_event(
-                    TraceEvent::user_trace(seq, now, format!("budget_meet:polls={polls},cost={cost}")),
-                );
+                runtime.state.trace.record_event(|seq| {
+                    TraceEvent::user_trace(
+                        seq,
+                        now,
+                        format!("budget_meet:polls={polls},cost={cost}"),
+                    )
+                });
             }
 
             "task_spawn" => {
@@ -300,28 +291,37 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
                         task.id = task_id;
                     }
                     // Emit spawn trace event
-                    let seq = runtime.state.next_trace_seq();
                     let now = runtime.now();
-                    runtime.state.trace.push_event(
-                        TraceEvent::spawn(seq, now, task_id, *region_id),
-                    );
+                    runtime
+                        .state
+                        .trace
+                        .record_event(|seq| TraceEvent::spawn(seq, now, task_id, *region_id));
                     handles.insert(op_id, Handle::Task(task_id));
                 }
             }
 
             "task_cancel" => {
-                let task_ref = args["task_ref"].as_u64()
+                let task_ref = args["task_ref"]
+                    .as_u64()
                     .or_else(|| args["region_ref"].as_u64())
                     .unwrap_or(0);
                 if let Some(Handle::Region(region_id)) = handles.get(&task_ref) {
                     let reason = CancelReason::new(CancelKind::User);
-                    runtime.state.cancel_request(*region_id, &reason, None);
+                    let (_, wakes) = runtime
+                        .state
+                        .cancel_request(*region_id, &reason, None)
+                        .into_parts();
+                    wakes.dispatch();
                 } else if let Some(Handle::Task(task_id)) = handles.get(&task_ref) {
                     // Cancel the task's owning region
                     if let Some(task) = runtime.state.task(*task_id) {
                         let owner = task.owner;
                         let reason = CancelReason::new(CancelKind::User);
-                        runtime.state.cancel_request(owner, &reason, Some(*task_id));
+                        let (_, wakes) = runtime
+                            .state
+                            .cancel_request(owner, &reason, Some(*task_id))
+                            .into_parts();
+                        wakes.dispatch();
                     }
                 }
             }
@@ -334,7 +334,11 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
                 let region_ref = args["region_ref"].as_u64().unwrap_or(0);
                 // Copy the region_id to avoid borrow conflict
                 let region_id_opt = handles.get(&region_ref).and_then(|h| {
-                    if let Handle::Region(r) = h { Some(*r) } else { None }
+                    if let Handle::Region(r) = h {
+                        Some(*r)
+                    } else {
+                        None
+                    }
                 });
                 if let Some(region_id) = region_id_opt {
                     // Find or create a holder task
@@ -357,10 +361,10 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
 
             "obligation_commit" => {
                 let obl_ref = args["obligation_ref"].as_u64().unwrap_or(0);
-                if let Some(Handle::Obligation(obl_id)) = handles.get(&obl_ref) {
-                    if let Err(e) = runtime.state.commit_obligation(*obl_id) {
-                        error_codes.push(format!("obligation_commit_failed:{e}"));
-                    }
+                if let Some(Handle::Obligation(obl_id)) = handles.get(&obl_ref)
+                    && let Err(e) = runtime.state.commit_obligation(*obl_id)
+                {
+                    error_codes.push(format!("obligation_commit_failed:{e}"));
                 }
             }
 
@@ -377,22 +381,23 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
             "channel_create" => {
                 let _capacity = args["capacity"].as_u64().unwrap_or(4);
                 // Channel operations are async and need Cx — record as user trace
-                let seq = runtime.state.next_trace_seq();
                 let now = runtime.now();
-                runtime.state.trace.push_event(
-                    TraceEvent::user_trace(seq, now, format!("channel_create:capacity={_capacity}")),
-                );
+                runtime.state.trace.record_event(|seq| {
+                    TraceEvent::user_trace(seq, now, format!("channel_create:capacity={_capacity}"))
+                });
             }
 
-            "channel_reserve" | "channel_send" | "channel_send_immediate"
-            | "channel_try_send" | "channel_recv" => {
+            "channel_reserve"
+            | "channel_send"
+            | "channel_send_immediate"
+            | "channel_try_send"
+            | "channel_recv" => {
                 // Channel ops require async Cx context — record as user trace
-                let seq = runtime.state.next_trace_seq();
                 let now = runtime.now();
                 let detail = serde_json::to_string(args).unwrap_or_default();
-                runtime.state.trace.push_event(
-                    TraceEvent::user_trace(seq, now, format!("{op_name}:{detail}")),
-                );
+                runtime.state.trace.record_event(|seq| {
+                    TraceEvent::user_trace(seq, now, format!("{op_name}:{detail}"))
+                });
             }
 
             "timer_register" => {
@@ -400,22 +405,21 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
                 timer_counter += 1;
                 let timer_id = timer_counter;
                 // Record timer scheduled trace event
-                let seq = runtime.state.next_trace_seq();
                 let now = runtime.now();
-                runtime.state.trace.push_event(
-                    TraceEvent::timer_scheduled(seq, now, timer_id, Time::from_nanos(deadline_ns)),
-                );
+                runtime.state.trace.record_event(|seq| {
+                    TraceEvent::timer_scheduled(seq, now, timer_id, Time::from_nanos(deadline_ns))
+                });
                 handles.insert(op_id, Handle::Timer(timer_id));
             }
 
             "timer_cancel" => {
                 let timer_ref = args["timer_ref"].as_u64().unwrap_or(0);
                 if let Some(Handle::Timer(timer_id)) = handles.get(&timer_ref) {
-                    let seq = runtime.state.next_trace_seq();
                     let now = runtime.now();
-                    runtime.state.trace.push_event(
-                        TraceEvent::timer_cancelled(seq, now, *timer_id),
-                    );
+                    runtime
+                        .state
+                        .trace
+                        .record_event(|seq| TraceEvent::timer_cancelled(seq, now, *timer_id));
                 }
             }
 
@@ -428,11 +432,11 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
 
             "timer_check_fired" | "timer_check_fire_order" => {
                 // Verification ops — no state change, just check trace
-                let seq = runtime.state.next_trace_seq();
                 let now = runtime.now();
-                runtime.state.trace.push_event(
-                    TraceEvent::user_trace(seq, now, format!("{op_name}")),
-                );
+                runtime
+                    .state
+                    .trace
+                    .record_event(|seq| TraceEvent::user_trace(seq, now, op_name.to_owned()));
             }
 
             "quiescence_check" => {
@@ -441,11 +445,10 @@ fn capture_ops_fixture(path: &Path) -> Result<serde_json::Value, String> {
 
             other => {
                 eprintln!("  Warning: unknown op '{other}', treating as user trace");
-                let seq = runtime.state.next_trace_seq();
                 let now = runtime.now();
-                runtime.state.trace.push_event(
-                    TraceEvent::user_trace(seq, now, format!("unknown_op:{other}")),
-                );
+                runtime.state.trace.record_event(|seq| {
+                    TraceEvent::user_trace(seq, now, format!("unknown_op:{other}"))
+                });
             }
         }
     }
@@ -535,13 +538,12 @@ fn find_or_create_task(
     op_id: u64,
 ) -> TaskId {
     // Look for an existing task handle
-    for (_, handle) in handles.iter() {
-        if let Handle::Task(task_id) = handle {
-            if let Some(task) = runtime.state.task(*task_id) {
-                if task.owner == region_id {
-                    return *task_id;
-                }
-            }
+    for handle in handles.values() {
+        if let Handle::Task(task_id) = handle
+            && let Some(task) = runtime.state.task(*task_id)
+            && task.owner == region_id
+        {
+            return *task_id;
         }
     }
     // Create a synthetic task
@@ -554,11 +556,11 @@ fn find_or_create_task(
     if let Some(task) = runtime.state.task_mut(task_id) {
         task.id = task_id;
     }
-    let seq = runtime.state.next_trace_seq();
     let now = runtime.now();
-    runtime.state.trace.push_event(
-        TraceEvent::spawn(seq, now, task_id, region_id),
-    );
+    runtime
+        .state
+        .trace
+        .record_event(|seq| TraceEvent::spawn(seq, now, task_id, region_id));
     task_id
 }
 
@@ -587,7 +589,7 @@ fn run_scenario_dir(dir: &Path, out_dir: &Path, seed_override: Option<u64>) {
         .filter(|e| {
             e.path()
                 .extension()
-                .map_or(false, |ext| ext == "yaml" || ext == "yml")
+                .is_some_and(|ext| ext == "yaml" || ext == "yml")
         })
         .collect();
     entries.sort_by_key(|e| e.path());
@@ -666,8 +668,12 @@ fn run_single_scenario(path: &Path, seed_override: Option<u64>) -> serde_json::V
             FaultAction::HostRestart => "host_restart",
             FaultAction::ClockSkew => "clock_skew",
             FaultAction::ClockReset => "clock_reset",
+            FaultAction::DiskPressure => "disk_pressure",
+            FaultAction::DiskRecovered => "disk_recovered",
+            FaultAction::DelayedCleanup => "delayed_cleanup",
+            FaultAction::ProcessStall => "process_stall",
+            FaultAction::ProcessResume => "process_resume",
         };
-        let seq = runtime.state.next_trace_seq();
         let now = runtime.now();
         let args_str: String = fault
             .args
@@ -681,14 +687,9 @@ fn run_single_scenario(path: &Path, seed_override: Option<u64>) -> serde_json::V
             })
             .collect::<Vec<_>>()
             .join(",");
-        runtime
-            .state
-            .trace
-            .push_event(TraceEvent::user_trace(
-                seq,
-                now,
-                format!("fault:{action_name}:{args_str}"),
-            ));
+        runtime.state.trace.record_event(|seq| {
+            TraceEvent::user_trace(seq, now, format!("fault:{action_name}:{args_str}"))
+        });
     }
 
     runtime.run_until_quiescent();
@@ -715,11 +716,7 @@ fn run_single_scenario(path: &Path, seed_override: Option<u64>) -> serde_json::V
         "trace_fingerprint": report.trace_fingerprint,
     });
 
-    let error_codes: Vec<String> = report
-        .invariant_violations
-        .iter()
-        .cloned()
-        .collect();
+    let error_codes = report.invariant_violations.to_vec();
 
     let input = serde_json::json!({
         "ops": [{
@@ -770,6 +767,8 @@ fn extract_entity_id(ev: &TraceEvent) -> u64 {
         TraceData::Region { region, .. } => region.arena_index().index() as u64,
         TraceData::Obligation { obligation, .. } => obligation.arena_index().index() as u64,
         TraceData::Cancel { task, .. } => task.arena_index().index() as u64,
+        TraceData::Worker { job_id, .. } => *job_id,
+        TraceData::Budget { task, .. } => task.arena_index().index() as u64,
         TraceData::RegionCancel { region, .. } => region.arena_index().index() as u64,
         TraceData::Timer { timer_id, .. } => *timer_id,
         TraceData::Monitor { monitor_ref, .. } => *monitor_ref,
@@ -788,15 +787,13 @@ fn extract_entity_id(ev: &TraceEvent) -> u64 {
 fn extract_aux(ev: &TraceEvent) -> u64 {
     match &ev.data {
         TraceData::Task { region, .. } => region.arena_index().index() as u64,
-        TraceData::Region { parent, .. } => {
-            parent.map_or(0, |p| p.arena_index().index() as u64)
-        }
+        TraceData::Region { parent, .. } => parent.map_or(0, |p| p.arena_index().index() as u64),
         TraceData::Obligation { task, .. } => task.arena_index().index() as u64,
         TraceData::Cancel { region, .. } => region.arena_index().index() as u64,
+        TraceData::Worker { task, .. } => task.arena_index().index() as u64,
+        TraceData::Budget { region, .. } => region.arena_index().index() as u64,
         TraceData::RegionCancel { .. } => 0,
-        TraceData::Timer { deadline, .. } => {
-            deadline.map_or(0, |d| d.as_nanos())
-        }
+        TraceData::Timer { deadline, .. } => deadline.map_or(0, |d| d.as_nanos()),
         TraceData::Time { new, .. } => new.as_nanos(),
         TraceData::RngSeed { seed } => *seed,
         TraceData::RngValue { value } => *value,
@@ -806,12 +803,10 @@ fn extract_aux(ev: &TraceEvent) -> u64 {
 }
 
 fn build_provenance() -> serde_json::Value {
-    let rust_commit = Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir("/data/projects/asupersync")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|_| "0".repeat(40));
+    // This tool links the exact registry dependency in Cargo.toml. An unrelated
+    // checkout's HEAD cannot identify that code. The release archive's
+    // .cargo_vcs_info.json records this commit for asupersync 0.5.0.
+    let rust_commit = "78b64636e99fea4ea2d868096576021dd3b8e519";
 
     let rustc_version = Command::new("rustc")
         .args(["--version", "--verbose"])
@@ -837,9 +832,9 @@ fn build_provenance() -> serde_json::Value {
         .map(|l| l.trim_start_matches("host:").trim().to_string())
         .unwrap_or_else(|| "unknown".to_string());
 
-    let cargo_lock_hash = std::fs::read("/data/projects/asupersync/Cargo.lock")
-        .map(|data| format!("{:x}", Sha256::digest(&data)))
-        .unwrap_or_else(|_| "0".repeat(64));
+    // Embed the lock used to compile the producer, so moving the executable
+    // or changing the checkout after compilation cannot relabel its graph.
+    let cargo_lock_hash = format!("{:x}", Sha256::digest(include_bytes!("../Cargo.lock")));
 
     let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -851,4 +846,37 @@ fn build_provenance() -> serde_json::Value {
         "cargo_lock_sha256": cargo_lock_hash,
         "capture_run_id": run_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_preserves_input_and_identifies_the_linked_runtime() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../fixtures/rust_reference/core_lifecycle/region-lifecycle-open-close-001.core.codec_json.json",
+        );
+        let original = std::fs::read(&path).unwrap();
+        let reference: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let captured = capture_ops_fixture(&path).unwrap();
+
+        assert_eq!(captured["input"], reference["input"]);
+        assert_eq!(captured["scenario_id"], reference["scenario_id"]);
+        assert!(!captured["expected_events"].as_array().unwrap().is_empty());
+        assert_eq!(
+            captured["expected_final_snapshot"],
+            serde_json::json!({"regions": 0, "tasks": 0, "obligations": 0}),
+        );
+        assert_eq!(
+            captured["provenance"]["rust_baseline_commit"],
+            "78b64636e99fea4ea2d868096576021dd3b8e519",
+        );
+        let tool_lock = include_bytes!("../Cargo.lock");
+        assert_eq!(
+            captured["provenance"]["cargo_lock_sha256"],
+            format!("{:x}", Sha256::digest(tool_lock)),
+        );
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
 }
