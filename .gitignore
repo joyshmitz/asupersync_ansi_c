@@ -71,6 +71,11 @@ diff.txt
 .beads/last-touched
 .beads/*.tmp
 .beads/.br_history/
+# FrankenSQLite VFS sidecars and WAL-cert (names do not match *.db / *.db-wal)
+.beads/beads.db-fsqlite-ns-*
+.beads/*-wal-cert
+.beads/*-wal-cert-head
+.beads/*.fsqlite-migration-state
 
 # bv (beads viewer) local config and caches
 .bv/
